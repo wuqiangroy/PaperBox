@@ -17,7 +17,6 @@ export struct LogPanel {
   @State levelFilter: string = 'ALL';
   /** HDS 点按光效:记录"当前被按下的那一个"的 key,松手/取消即清空(按下那一刻才亮) */
   @State litKey: string = '';
-  onOpenDrawer: () => void = () => {};
   private scroller: Scroller = new Scroller();
   private context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
   private fileOffset: number = 0;
@@ -77,7 +76,7 @@ export struct LogPanel {
     try {
       const documentPicker = new picker.DocumentViewPicker(this.context);
       const options = new picker.DocumentSaveOptions();
-      options.newFileNames = [`NekoBox-${Date.now()}.log`];
+      options.newFileNames = [`PaperBox-${Date.now()}.log`];
       const uris = await documentPicker.save(options);
       if (uris.length === 0) {
         return;

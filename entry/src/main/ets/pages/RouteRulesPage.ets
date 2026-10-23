@@ -15,7 +15,6 @@ export struct RouteRulesPanel {
   @State loadError: string = '';
   /** 当前被按下的元素 key(上移/下移箭头、各类按钮):"按下才亮"靠它逐颗判断 */
   @State litKey: string = '';
-  onOpenDrawer: () => void = () => {};
 
   aboutToAppear(): void {
     this.load();
@@ -402,6 +401,8 @@ export struct RouteRulesPanel {
           })
           .onClick(() => this.addRule())
         Button($r('app.string.route_reset')).height(34)
+          .fontSize(14)
+          .backgroundColor($r('app.color.surface_selected'))
           .fontColor($r('app.color.error'))
           .visualEffect(pressLightEffect(this.litKey === 'rules:reset', true))
           .scale({ x: this.litKey === 'rules:reset' ? 0.96 : 1.0, y: this.litKey === 'rules:reset' ? 0.96 : 1.0 })

@@ -147,6 +147,10 @@
     {
       "name": "fab_running",
       "value": "#FF4CCB7F"
+    },
+    {
+      "name": "tabbar_bg",
+      "value": "#CC101318"
     }
   ]
 }

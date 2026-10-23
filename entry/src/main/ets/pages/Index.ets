@@ -9,12 +9,15 @@ import zlib from '@ohos.zlib';
 import image from '@ohos.multimedia.image';
 import { scanBarcode, scanCore, generateBarcode } from '@kit.ScanKit';
 import window from '@ohos.window';
+import hidebug from '@ohos.hidebug';
 /* HDS 标题栏：自带"渐变模糊"(IMMERSIVE_GRADIENT_BLUR) 与沉浸光感材质 —— 不要自己画渐变) */
 import {
   BlurStrategy,
   HdsNavigation,
   HdsNavigationTitleBarOptions,
   HdsNavigationTitleMode,
+  HdsTabs,
+  HdsTabsController,
   ScrollEffectType,
   hdsMaterial
 } from '@kit.UIDesignKit';
@@ -22,7 +25,6 @@ import { UiSpec } from '../common/UiSpec';
 import { illuminatedEffect, pressLightEffect } from '../common/Effects';
 import { GlowIconButton } from '../common/components/GlowIconButton';
 import { HdsMenu, MenuItemData } from '../common/components/FlowMenu';
-import { HAND_SIDE_KEY, handedness } from '../common/Handedness';
 import { SettingsPage } from './SettingsPage';
 import { GroupPage } from './GroupPage';
 import { ToolsPage } from './ToolsPage';
@@ -46,32 +48,69 @@ import { publishVpnLatency } from '../core/VpnIpc';
 
 const OUTBOUND_MODES: Array<string> = ['rule', 'global', 'direct'];
 const OUTBOUND_MODE_LABELS: Array<Resource> = [$r('app.string.mode_rule'), $r('app.string.mode_global'), $r('app.string.mode_direct')];
+/** 底部 Tab 栏内容高(不含手势条让位) */
+const TAB_BAR_CONTENT_HEIGHT: number = 58;
 
-/** 抽屉项(顺序固定;activeTab→抽屉下标的映射见 TAB_TO_DRAWER_INDEX):[标识, 文案, 系统符号]
- *  「使用文档」入口已移除(用户 2026-10-17):不进列表,DocPage 路由保留但不可达 */
-const DRAWER_ITEM_IDS: Array<string> = ['config', 'groups', 'route', 'settings', 'logs', 'tools', 'about'];
-const DRAWER_ITEM_LABELS: Array<Resource> = [
-  $r('app.string.nav_config'),
-  $r('app.string.nav_groups'),
-  $r('app.string.nav_route'),
-  $r('app.string.settings_title'),
-  $r('app.string.logs'),
-  $r('app.string.nav_tools'),
-  $r('app.string.nav_about')
+/** 底部 Tab(顺序即 activeTab 下标):[文案, 系统符号] */
+const TAB_LABELS: Array<Resource> = [
+  $r('app.string.tab_proxy'),
+  $r('app.string.tab_subscriptions'),
+  $r('app.string.tab_settings')
 ];
-const DRAWER_ITEM_SYMBOLS: Array<Resource> = [
+const TAB_SYMBOLS: Array<Resource> = [
   $r('sys.symbol.list_square'),
+  $r('sys.symbol.square_and_arrow_down'),
+  $r('sys.symbol.gearshape')
+];
+/** 设置页二级分区(顺序即列表顺序):[标识, 文案, 描述, 系统符号] */
+const SETTINGS_SECTION_IDS: Array<string> = ['general', 'groups', 'route', 'logs', 'tools', 'about'];
+const SETTINGS_SECTION_LABELS: Array<Resource> = [
+  $r('app.string.settings_hub_general'),
+  $r('app.string.settings_hub_groups'),
+  $r('app.string.settings_hub_route'),
+  $r('app.string.settings_hub_logs'),
+  $r('app.string.settings_hub_tools'),
+  $r('app.string.settings_hub_about')
+];
+const SETTINGS_SECTION_DESCS: Array<Resource> = [
+  $r('app.string.settings_hub_general_desc'),
+  $r('app.string.settings_hub_groups_desc'),
+  $r('app.string.settings_hub_route_desc'),
+  $r('app.string.settings_hub_logs_desc'),
+  $r('app.string.settings_hub_tools_desc'),
+  $r('app.string.settings_hub_about_desc')
+];
+const SETTINGS_SECTION_SYMBOLS: Array<Resource> = [
+  $r('sys.symbol.gearshape'),
   $r('sys.symbol.folder'),
   $r('sys.symbol.arrow_up_left_and_arrow_down_right'),
-  $r('sys.symbol.gearshape'),
   $r('sys.symbol.doc_text'),
   $r('sys.symbol.wand_and_stars'),
   $r('sys.symbol.info_circle')
 ];
-/** activeTab(0..6 = 配置/分组/路由/设置/日志/工具/关于) → 抽屉下标 */
-const TAB_TO_DRAWER_INDEX: Array<number> = [0, 1, 2, 3, 4, 5, 6];
 /** 顶栏 ⋮ 的菜单锚点 id(沉浸光感菜单靠它定位,必须在某个真实组件上用 .id() 挂上) */
 const OVERFLOW_MENU_ANCHOR: string = 'nbOverflowAnchor';
+/** 订阅页"本地/未分组"分区的 key */
+const LOCAL_SECTION_KEY: string = 'local';
+
+/** 订阅页折叠列表的行模型:kind = header(订阅标题) / node(节点卡) */
+class AccordionRow {
+  kind: string = 'node';
+  key: string = '';
+  title: ResourceStr = '';
+  subtitle: string = '';
+  count: number = 0;
+  sourceKey: string = '';
+  profile: Profile = new Profile();
+
+  static ofProfile(p: Profile): AccordionRow {
+    const row = new AccordionRow();
+    row.kind = 'node';
+    row.key = `p:${p.id}`;
+    row.profile = p;
+    return row;
+  }
+}
 
 @Entry
 @Component
@@ -83,29 +122,37 @@ struct Index {
   @State testing: boolean = false;
   @State settings: AppSettings = new AppSettings();
   @State subscriptions: Array<SubInfo> = [];
+  /** 订阅页正在更新的订阅 URL("更新"按钮的忙碌态) */
+  @State updatingSubUrl: string = '';
   @State activeConfigUrl: string = '';
-  @State activeTab: number = 0;          // 0 配置 / 1 分组 / 2 路由 / 3 设置 / 4 日志 / 5 工具 / 6 关于
+  @State activeTab: number = 0;          // 0 代理 / 1 订阅 / 2 设置
+  /** 设置页当前二级分区(空串 = 设置首页入口列表) */
+  @State settingsSection: string = '';
   @State uiUptime: number = 0;
   @State nodeSearch: string = '';
   @State searchVisible: boolean = false;
-  @State drawerOpen: boolean = false;
-  /** 抽屉当前(最近一次)滑入的一侧:面板位置由 translate 决定,换手就是改它(带补间动画) */
-  @State drawerEdge: string = 'right';
-  /** 窗口宽度(vp):抽屉面板宽 + 左右位移都按它算(量不到时各函数里有兜底) */
-  @State pageW: number = 0;
-  /** 窗口高度(vp)：内容层铺满整窗时用 matchParent，这里留作尺度参考 */
-  /** 智感握姿:当前交互手所在的一侧('right' | 'left',由 EntryAbility 里的 handedness 追踪器写入)。
-   *  拿不到识别结果时恒为 'right' ⇒ 布局与改造前逐字一致。 */
-  @StorageLink(HAND_SIDE_KEY) @Watch('onHandSideChanged') handSide: string = 'right';
-  /** 当前被按下的元素 key(抽屉项 / 节点卡 / 模式按钮 / FAB):"按下才亮"靠它逐颗判断 */
+  /** 节点展示方式:'list' 列表 / 'grid' 块状(参考 FlClash,两种视图都可选) */
+  @State nodeViewMode: string = 'list';
+  /** 块状视图列数:按窗口宽度自适应(手机 2 列,平板 3~4 列) */
+  @State gridColumns: number = 2;
+  /** 订阅页折叠状态:存**已折叠**的 key(缺省全部展开,更接近"节点直接可见") */
+  @State collapsedKeys: Array<string> = [];
+  /** 首页仪表盘:当前应用占用内存(MB),定时刷新 */
+  @State memMb: number = 0;
+  /** 当前被按下的元素 key(底部 Tab / 节点卡 / 模式按钮 / FAB):"按下才亮"靠它逐颗判断 */
   @State litKey: string = '';
   /** 配置页列表的滚动器(列表滚动位置复位 / 分组切换后回到顶部都靠它) */
   private configScroller: Scroller = new Scroller();
+  /** 块状视图的滚动器(同一个 Scroller 不能同时绑 List 和 Grid) */
+  private gridScroller: Scroller = new Scroller();
+  /** 内存占用轮询定时器(首页仪表盘) */
+  private memTimer: number = -1;
   /** 顶栏 ⋮ 的沉浸光感菜单(照 RzdSchool HdsMenu:openMenu + 自绘面板 + 模糊背板 + 自适应取色) */
   private overflowMenu: HdsMenu = new HdsMenu();
   /** HdsNavigation 的宿主栈（本工程二级页走 router，这里只当标题栏宿主用） */
   private pathStack: NavPathStack = new NavPathStack();
-  @State safeTopVp: number = 38;
+  /** 底部沉浸光感胶囊 Tab 的控制器(与 activeTab 双向同步) */
+  private tabsController: HdsTabsController = new HdsTabsController();
   /** 底部导航条/手势条高度(vp,运行时实测) —— 列表与 FAB 的底部让位用 */
   @State navBottomVp: number = 24;
   /** 内容区顶部让位(vp):运行时用探针量「顶栏底边 − 内容区原点」得到,不再靠猜常数 */
@@ -131,11 +178,15 @@ struct Index {
 
   aboutToAppear(): void {
     setAppContext(this.context);
-    /* 智感握姿:全进程只订阅一次(交互手/握持手),结果写 AppStorage 供各页面镜像布局。
-       ⚠️ 放在这里而不是 EntryAbility.onCreate:motion 要走系统服务,放启动关键路径上
-       一旦服务未就绪会卡死在开屏页(真机踩过)。Handler 内部还会再 defer 一次(setTimeout 0)。 */
-    handedness.start();
+    try {
+      this.appVersion = bundleManager.getBundleInfoForSelfSync(
+        bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT).versionName;
+    } catch (e) {
+      this.appVersion = '';
+    }
+    /* 智感握姿已移除(用户 2026-10-23):底部 Tab 胶囊固定居中 */
     this.computeInsets();
+    this.startMemoryPoll();
     this.refresh();
     this.autoUpdateSubs();
     this.autoConnect();
@@ -157,33 +208,47 @@ struct Index {
         const ui = this.getUIContext();
         const nav = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
         const bottomVp = ui.px2vp(nav.bottomRect.height);
-        const sys = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
-        const topVp = ui.px2vp(sys.topRect.height);
-        if (topVp > 0) {
-          this.safeTopVp = topVp;
-        }
         if (bottomVp > 0) {
           this.navBottomVp = bottomVp;
         }
-        /* 窗口宽(vp):抽屉面板宽/位移按它算 —— 抽屉换边是 translate 平移,位移量必须是真实像素宽 */
-        const prop = win.getWindowProperties();
-        const wVp = ui.px2vp(prop.windowRect.width);
-        if (wVp > 0) {
-          this.pageW = wVp;
-        }
+        /* 块状视图列数随窗口宽度走:窄屏 2 列、平板 3 列、更宽的 4 列 */
+        const widthVp = ui.px2vp(win.getWindowProperties().windowRect.width);
+        this.gridColumns = widthVp >= 840 ? 4 : (widthVp >= 600 ? 3 : 2);
       }).catch(() => {
       });
     } catch (e) {
     }
   }
+  /** 首页仪表盘的内存占用:每 5s 轮询一次(hidebug.getPss 返回 KB) */
+  private startMemoryPoll(): void {
+    this.refreshMemory();
+    if (this.memTimer >= 0) {
+      clearInterval(this.memTimer);
+    }
+    this.memTimer = setInterval(() => {
+      this.refreshMemory();
+    }, 5000);
+  }
+
+  private refreshMemory(): void {
+    try {
+      const kb = Number(hidebug.getPss());
+      if (kb > 0) {
+        this.memMb = Math.round(kb / 1024);
+      }
+    } catch (e) {
+      // 读取失败保持上一次的值
+    }
+  }
+
   /**
    * 系统返回键(对齐安卓 onBackPressedDispatcher):
-   * 抽屉打开 → 收抽屉;非配置页 → 回配置页;配置页 → 退到桌面(VPN 继续运行)。
+   * 设置二级页 → 回设置首页;非代理页 → 回代理页;代理页 → 退到桌面(VPN 继续运行)。
    * 本 SDK 下该回调只对 @Entry 组件生效。
    */
   onBackPress(): boolean {
-    if (this.drawerOpen) {
-      this.drawerOpen = false;
+    if (this.activeTab === 2 && this.settingsSection.length > 0) {
+      this.settingsSection = '';
       return true;
     }
     if (this.activeTab !== 0) {
@@ -220,6 +285,10 @@ struct Index {
   }
 
   aboutToDisappear(): void {
+    if (this.memTimer >= 0) {
+      clearInterval(this.memTimer);
+      this.memTimer = -1;
+    }
     this.cancelSearchFilterTimer();
     this.stopSpeedPoller();
     if (this.uptimeTimer >= 0) {
@@ -530,12 +599,16 @@ struct Index {
   /** 测速一组节点(用户 2026-10-17:不再支持全量)。缺省 = 当前选中分组;
    *  分组条长按"测速本组"传被按的那个组 id。 */
   async runSpeedTest(groupId: string = this.selectedGroupId): Promise<void> {
+    await this.runSpeedTestFor(this.profiles.filter((item: Profile) => item.groupId === groupId));
+  }
+
+  /** 对一组指定节点测速(订阅页按订阅/未分组各测各的) */
+  async runSpeedTestFor(targets: Array<Profile>): Promise<void> {
     if (this.testing) {
       // 之前是静默 return:测速进行中再点测速毫无反馈,像"点了没反应"
       promptAction.showToast({ message: $r('app.string.index_test_in_progress') });
       return;
     }
-    const targets = this.profiles.filter((item: Profile) => item.groupId === groupId);
     if (targets.length === 0) {
       promptAction.showToast({ message: $r('app.string.speed_test_group_empty') });
       return;
@@ -712,6 +785,26 @@ struct Index {
       promptAction.showToast({ message: $r('app.string.sub_update_result', r.added, r.removed) });
     } catch (e) {
       promptAction.showToast({ message: $r('app.string.update_failed_reason', subErrorText(e as Object)) });
+    }
+  }
+
+  /** 订阅页:更新单个订阅(标题行「更新」按钮) */
+  async updateSubByUrl(url: string): Promise<void> {
+    if (this.updatingSubUrl.length > 0) {
+      return;
+    }
+    this.updatingSubUrl = url;
+    promptAction.showToast({ message: $r('app.string.fetching_subscription') });
+    try {
+      const r = await updateSubscription(url);
+      await markSubSuccess(url);
+      await this.refresh();
+      promptAction.showToast({ message: $r('app.string.sub_update_result', r.added, r.removed) });
+    } catch (e) {
+      await markSubFailure(url);
+      promptAction.showToast({ message: $r('app.string.update_failed_reason', subErrorText(e as Object)) });
+    } finally {
+      this.updatingSubUrl = '';
     }
   }
 
@@ -1434,188 +1527,68 @@ struct Index {
     return `${Date.now()}_${Math.floor(Math.random() * 100000)}`;
   }
 
-  // ---------------------------------------------------------------- 抽屉导航(对齐安卓 Drawer;手搓列表,不用 HdsSideMenu)
+  // ---------------------------------------------------------------- 底部 Tab 导航
 
-  /** 抽屉列表项:[文案, 标识, 系统符号](顺序由模块级常量定义) */
-  private drawerItems(): Array<[ResourceStr, string, Resource]> {
-    const items: Array<[ResourceStr, string, Resource]> = [];
-    for (let i = 0; i < DRAWER_ITEM_IDS.length; i++) {
-      items.push([DRAWER_ITEM_LABELS[i], DRAWER_ITEM_IDS[i], DRAWER_ITEM_SYMBOLS[i]]);
-    }
-    return items;
-  }
-
-  /** 当前分区是否就是这一项(抽屉选中态) */
-  private drawerItemActive(id: string): boolean {
-    if (this.activeTab >= 0 && this.activeTab < TAB_TO_DRAWER_INDEX.length) {
-      return DRAWER_ITEM_IDS[TAB_TO_DRAWER_INDEX[this.activeTab]] === id;
-    }
-    return id === 'config';
-  }
-
-  private onDrawerSelect(id: string): void {
-    this.drawerOpen = false;
-    if (id === 'config') {
-      this.activeTab = 0;
-    } else if (id === 'groups') {
-      this.activeTab = 1;
-    } else if (id === 'route') {
-      this.activeTab = 2;
-    } else if (id === 'settings') {
-      this.activeTab = 3;
-    } else if (id === 'logs') {
-      this.activeTab = 4;
-    } else if (id === 'tools') {
-      this.activeTab = 5;
-    } else if (id === 'about') {
-      this.activeTab = 6;
-    }
-  }
-
+  /** 单个 Tab 的胶囊内单元(图标 + 文案):选中态用品牌色,按下带 HDS 点按光效 */
   @Builder
-  private drawerPanel() {
-    Column() {
-      // 头部:应用图标 + 名称 + 版本(对齐安卓 Drawer 头部)
-      Row({ space: 12 }) {
-        Image($r('app.media.icon'))
-          .width(40)
-          .height(40)
-          .borderRadius(10)
-          .alt($r('app.media.icon'))
-        Column({ space: 2 }) {
-          Text($r('app.string.brand_name'))
-            .fontSize(16).fontWeight(800).fontColor($r('app.color.text_1'))
-          Text(this.appVersion.length > 0 ? `v${this.appVersion}` : '')
-            .fontSize(11).fontColor($r('app.color.text_3'))
-        }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
-      }
-      .width('100%')
-      .alignItems(VerticalAlign.Center)
-      /* 面板从 y=0 铺到屏底(遮罩要盖住状态栏),但**里面的内容必须躲开状态栏**:
-         原来写死 30 ⇒ 图标/版本被状态栏压住(2.0.18 真机)。改成实测状态栏高度 + 12 呼吸位。 */
-      .padding({ left: 20, right: 16, top: this.safeTopVp + 12, bottom: 16 })
-
-      Divider().color($r('app.color.hairline')).strokeWidth(UiSpec.HAIRLINE_WIDTH)
-
-      /* 抽屉列表:**手搓 Row 列表**(不用 HdsSideMenu —— 它要 SystemCapability.UIDesign.HDSPattern.Standard,
-         本机设备上渲染不出来 ⇒ 抽屉"打不开"的根因,见项目记忆第六段)。图标是系统符号,按下带 HDS 点光。 */
-      Column() {
-        ForEach(this.drawerItems(), (item: [ResourceStr, string, Resource]) => {
-          Row({ space: 14 }) {
-            SymbolGlyph(item[2])
-              .fontSize(19)
-              .fontColor([this.drawerItemActive(item[1]) ? $r('app.color.primary') : $r('app.color.text_3')])
-              .width(24)
-            Text(item[0])
-              .fontSize(14.5)
-              .fontWeight(this.drawerItemActive(item[1]) ? 700 : 400)
-              .fontColor(this.drawerItemActive(item[1]) ? $r('app.color.primary') : $r('app.color.text_2'))
-              .layoutWeight(1)
-          }
-          .width('100%')
-          .height(48)
-          .padding({ left: 20, right: 14 })
-          .borderRadius(12)
-          .visualEffect(pressLightEffect(this.litKey === `drawer:${item[1]}`, false))
-          .onTouch((event: TouchEvent) => {
-            if (event.type === TouchType.Down) {
-              this.litKey = `drawer:${item[1]}`;
-            } else if (event.type === TouchType.Up) {
-              this.litKey = '';
-              this.onDrawerSelect(item[1]);
-            } else if (event.type === TouchType.Cancel) {
-              this.litKey = '';
-            }
-          })
-        }, (item: [ResourceStr, string, Resource]) => item[1])
-      }
-      .width('100%')
-      .padding({ left: 8, right: 8, top: 4 })
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
-
-      Text($r('app.string.drawer_footer'))
-        .fontSize(10.5).fontColor($r('app.color.text_3'))
-        .width('100%')
-        .padding({ left: 20, bottom: this.navBottomVp + 12 })
+  private tabBarItem(index: number) {
+    Column({ space: 3 }) {
+      SymbolGlyph(TAB_SYMBOLS[index])
+        .fontSize(21)
+        .fontColor([this.activeTab === index ? $r('app.color.primary') : $r('app.color.text_3')])
+      Text(TAB_LABELS[index])
+        .fontSize(10.5)
+        .fontWeight(this.activeTab === index ? 700 : 400)
+        .fontColor(this.activeTab === index ? $r('app.color.primary') : $r('app.color.text_3'))
     }
-    /* 宽度显式给(不再写 '78%'):抽屉换边靠 **translate 平移**,位移量要按真实面板宽算 */
-    .width(this.drawerPanelW())
+    .width('100%')
     .height('100%')
-    .backgroundColor($r('app.color.app_background'))
-    .alignItems(HorizontalAlign.Start)
-    .onClick(() => {
-      // 吞掉点击事件,防止点面板空白处触发遮罩关闭
+    .justifyContent(FlexAlign.Center)
+    /* 去掉点 Tab 时系统焦点框(蓝框)与 HDS 按压光源(按住时那条蓝框其实是点光效果) */
+    .focusable(false)
+    .focusOnTouch(false)
+    .scale({
+      x: this.litKey === `tabbar:${index}` ? 0.94 : 1.0,
+      y: this.litKey === `tabbar:${index}` ? 0.94 : 1.0
     })
-    .shadow({ radius: 24, color: 'rgba(0,0,0,0.25)', offsetY: 0 })
-    /* 面板本体也伸进上下系统栏区,否则日间模式底部会露出一条底色(用户实测) */
-    .expandSafeArea([SafeAreaType.SYSTEM, SafeAreaType.CUTOUT], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
-    /* 开/关的进出动画:从**当前所在的边**滑入滑出(方向锁定在 drawerEdge,见 drawOverlay 的注释) */
-    .transition(TransitionEffect.move(this.drawerEdge === 'left' ? TransitionEdge.START : TransitionEdge.END)
-      .animation({ duration: 250, curve: Curve.Friction }))
-  }
-
-  /** 抽屉面板宽:窗口宽的 78%,上限 320vp(pageW 量不到时退回 300) */
-  private drawerPanelW(): number {
-    const w = this.pageW > 0 ? this.pageW : 384;
-    return Math.min(w * 0.78, 320);
-  }
-
-  /** 抽屉的水平位移:左手 = 贴左(x=0),右手 = 推到右侧(窗口宽 − 面板宽) */
-  private drawerOffsetX(): number {
-    if (this.drawerEdge === 'left') {
-      return 0;
-    }
-    const w = this.pageW > 0 ? this.pageW : 384;
-    return Math.max(0, w - this.drawerPanelW());
-  }
-
-  /** 开抽屉:先定滑入方向(交互手那一侧),再挂载面板 ⇒ 从正确的一侧滑进来 */
-  private openDrawer(): void {
-    this.drawerEdge = this.handSide;
-    this.drawerOpen = true;
-  }
-
-  /**
-   * 智感握姿换手:抽屉**直接左右平移**过去(用户点名:不要"先收起再出现")。
-   * 机制:遮罩 Row 恒为 `FlexAlign.Start` 对齐,面板位置全由 `translate(x)` 决定;
-   *      `drawerEdge` 一变 ⇒ `translate` 变 ⇒ 外层那句 `.animation()` 自动补间 ⇒ 面板横着滑过去。
-   * (原来用 justifyContent 换边,那是布局枚举、不可动画,才不得不"收起再滑入"。)
-   */
-  private onHandSideChanged(): void {
-    if (!this.drawerOpen) {
-      return;
-    }
-    this.drawerEdge = this.handSide;
-  }
-
-  @Builder
-  private drawerOverlay() {
-    if (this.drawerOpen) {
-      Row() {
-        /* 位移层:只负责左右平移(换手时动画)。里面那层面板自己负责开关的进出动画,两者不在同一节点上 ⇒ 不会互相覆盖 */
-        Column() {
-          this.drawerPanel()
-        }
-        .width(this.drawerPanelW())
-        .height('100%')
-        .translate({ x: this.drawerOffsetX() })
-        .animation({ duration: 260, curve: Curve.EaseInOut })
+    .onTouch((event: TouchEvent) => {
+      if (event.type === TouchType.Down) {
+        this.litKey = `tabbar:${index}`;
+      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+        this.litKey = '';
       }
-      .width('100%')
-      .height('100%')
-      /* ⚠️ 恒为 Start:换边是 translate 的事,这里不能跟着 handSide 变(布局枚举不可动画 ⇒ 会瞬移) */
-      .justifyContent(FlexAlign.Start)
-      .backgroundColor('rgba(0,0,0,0.35)')
-      /* 抽屉在最外层 ⇒ 连同状态栏/手势条一起盖住 */
-      .expandSafeArea([SafeAreaType.SYSTEM, SafeAreaType.CUTOUT], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
-      .onClick(() => {
-        this.drawerOpen = false;
-      })
+      /* 按下抬起就先把 activeTab 切过去:标题文字、右上角动作按钮与内容同帧更新。
+         以前靠 HdsTabs 的 onChange 回填,切换动画期间标题栏还是旧状态 ——
+         表现为「切到订阅页后 + / 视图切换按钮才补画出来」,反方向则晚一拍消失。 */
+      if (event.type === TouchType.Up && this.activeTab !== index) {
+        /* 离开订阅页时把列表退回顶部:HDS 标题栏的「渐变模糊」是跟滚动偏移联动的,
+           偏移退不回去,切到设置页后标题栏仍停在"已模糊"状态,
+           首张卡片会被那层材质盖成灰雾。 */
+        if (this.activeTab === 1) {
+          this.resetSubscriptionScroll();
+        }
+        this.activeTab = index;
+        if (index !== 2) {
+          this.settingsSection = '';
+        }
+      }
+    })
+  }
+
+  /** 把订阅页的列表/网格滚回顶部(两个子页各绑一个 Scroller,只会有一个挂载) */
+  private resetSubscriptionScroll(): void {
+    try {
+      this.configScroller.scrollEdge(Edge.Top);
+    } catch (e) {
+      // 当前不在列表视图,Scroller 未绑定
+    }
+    try {
+      this.gridScroller.scrollEdge(Edge.Top);
+    } catch (e) {
+      // 当前不在块状视图,Scroller 未绑定
     }
   }
+
 
 
   // ---------------------------------------------------------------- 配置页(对齐安卓 ConfigurationFragment)
@@ -1747,6 +1720,111 @@ struct Index {
         })
   }
 
+  /**
+   * 块状视图的节点卡(参考 FlClash 的网格卡):名称 + 协议 + 延迟,选中态描边 + 右上角勾。
+   * 与列表卡共用同一套点按光效/长按菜单/点击逻辑,只是尺寸更紧凑、固定等高便于对齐。
+   */
+  @Builder
+  private gridNodeCard(p: Profile) {
+    Column({ space: 4 }) {
+      Row({ space: 4 }) {
+        if (p.pinned) {
+          SymbolGlyph($r('sys.symbol.star_fill'))
+            .fontSize(10)
+            .fontColor([$r('app.color.warning')])
+        }
+        Text(p.name)
+          .fontSize(13)
+          .fontWeight(this.selectedId === p.id ? 700 : 600)
+          .fontColor($r('app.color.text_1'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1)
+        if (this.selectedId === p.id) {
+          SymbolGlyph($r('sys.symbol.checkmark_circle_fill'))
+            .fontSize(14)
+            .fontColor([$r('app.color.primary')])
+        }
+      }
+      .width('100%')
+
+      Text(profileTypeLabel(p.type))
+        .fontSize(10)
+        .fontColor($r('app.color.text_3'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+      Blank()
+
+      Text(this.latencyText(p))
+        .fontSize(12)
+        .fontColor(this.latencyColor(p))
+    }
+    .alignItems(HorizontalAlign.Start)
+    .width('100%')
+    .height(96)
+    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+    .backgroundColor(this.selectedId === p.id ? $r('app.color.surface_selected') : $r('app.color.surface'))
+    .borderRadius(14)
+    .border({ width: 1.5, color: this.selectedId === p.id ? $r('app.color.primary') : Color.Transparent })
+    .shadow({ radius: 6, color: $r('app.color.shadow_color'), offsetY: 1 })
+    .visualEffect(pressLightEffect(this.litKey === `node:${p.id}`, false))
+    .onTouch((event: TouchEvent) => {
+      if (event.type === TouchType.Down) {
+        this.litKey = `node:${p.id}`;
+      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+        this.litKey = '';
+      }
+    })
+    .onClick(() => this.onNodeTap(p))
+    .bindContextMenu(this.profileContextMenu(p), ResponseType.LongPress, {
+      backgroundBlurStyle: BlurStyle.COMPONENT_THICK,
+      backgroundBlurStyleOptions: {
+        colorMode: ThemeColorMode.SYSTEM,
+        adaptiveColor: AdaptiveColor.AVERAGE
+      }
+    })
+  }
+
+  /** 块状视图的列模板(按 gridColumns 拼 1fr) */
+  private gridTemplate(): string {
+    let template = '1fr';
+    for (let i = 1; i < this.gridColumns; i++) {
+      template += ' 1fr';
+    }
+    return template;
+  }
+
+  /** 块状视图:顶部同样垫占位项,让卡片能滚到顶栏后面 */
+  @Builder
+  private nodeGrid() {
+    Grid(this.gridScroller) {
+      GridItem() {
+        Row()
+          .width('100%')
+          .height(Math.max(0, this.contentTopInset - 8))
+      }
+      .columnStart(0)
+      .columnEnd(this.gridColumns - 1)
+
+      ForEach(this.visibleProfiles(this.selectedGroupId), (profile: Profile) => {
+        GridItem() {
+          this.gridNodeCard(profile)
+        }
+      }, (profile: Profile) => profile.id)
+    }
+    .columnsTemplate(this.gridTemplate())
+    .columnsGap(8)
+    .rowsGap(8)
+    .edgeEffect(EdgeEffect.Spring)
+    .scrollBar(BarState.Off)
+    .layoutWeight(1)
+    .width('100%')
+    .padding({ left: 14, right: 14, top: 0, bottom: 0 })
+    .clip(false)
+    .id('nbLegacyGridProbe')
+  }
+
   /** 搜索态输入行:画在 HDS 顶栏 bottomBuilder 里,与分组条**同一条带互换**
    *  (用户点名位置:动作按钮行之下、模式行之上);总高 32,凑底部带恒 68 */
   @Builder
@@ -1794,6 +1872,9 @@ struct Index {
         .width('100%')
         .layoutWeight(1)
         .justifyContent(FlexAlign.Center)
+      } else if (this.nodeViewMode === 'grid') {
+        /* 块状(网格)视图:参考 FlClash,一屏多卡 */
+        this.nodeGrid()
       } else {
         List({ space: 8, scroller: this.configScroller }) {
           /* ★ 顶部占位项 = 顶栏高度(自校准值):列表的**框**铺满整屏(含状态栏),
@@ -1822,7 +1903,7 @@ struct Index {
            RzdVideo 首页的 `Scroll` / RzdMusic 首页的 `Scroll` 都是 `.clip(false)`(它们的内容才能顶到 y=0)。 */
         .clip(false)
         /* 探针（仅诊断用，无逻辑依赖）：hdc hilog 里可核对列表视口是否真的在窗口顶 */
-        .id('nbListProbe')
+        .id('nbLegacyListProbe')
       }
     }
     .width('100%')
@@ -1957,222 +2038,79 @@ struct Index {
     })
   }
 
-  /**
-   * 连接/断开大按钮(对齐安卓 FAB)。
-   * 图标从字符 `■`/`▶` 换成系统符号;宿主换成 `Button`(点光源宿主白名单要 Button/Row/Column…,
-   * 且 `pressShadow` 只在 Button 上生效),`stateEffect: false` 关掉自带按压态免得盖住 HDS 光效。
-   */
-  @Builder
-  private fabButton(edge: TransitionEdge) {
-    Button({ type: ButtonType.Circle, stateEffect: false }) {
-      Stack() {
-        if (this.statusText === 'connecting' || this.statusText === 'switching') {
-          LoadingProgress()
-            .width(26).height(26).color($r('app.color.surface'))
-        } else {
-          SymbolGlyph(this.isRunning ? $r('sys.symbol.pause_fill') : $r('sys.symbol.play_fill'))
-            .fontSize(this.isRunning ? 26 : 24)
-            .fontColor([$r('app.color.surface')])
-        }
-      }
-    }
-    .width(64)
-    .height(64)
-    .backgroundColor(this.isRunning ? $r('app.color.fab_running') : $r('app.color.fab_bg'))
-    .shadow({ radius: 14, color: 'rgba(0,0,0,0.25)', offsetY: 4 })
-    .visualEffect(pressLightEffect(this.litKey === 'fab', true))
-    .scale({ x: this.litKey === 'fab' ? 0.93 : 1.0, y: this.litKey === 'fab' ? 0.93 : 1.0 })
-    /* 换侧时按官方建议的 TransitionEffect.move 从那一侧滑入(与 RzdSchool 的握姿悬浮球同一手法) */
-    .transition(TransitionEffect.move(edge).animation({ duration: 250, curve: Curve.Friction }))
-    .onTouch((event: TouchEvent) => {
-      if (event.type === TouchType.Down) {
-        this.litKey = 'fab';
-      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-        this.litKey = '';
-      }
-    })
-    .onClick(() => this.toggleVpn())
-  }
-
-  /** 智感握姿:连接键跟着**交互手**走(识别不出时恒在右手侧,与改造前一致) */
-  @Builder
-  private fabLayer() {
-    Row() {
-      if (this.handSide === 'left') {
-        this.fabButton(TransitionEdge.START)
-      } else {
-        this.fabButton(TransitionEdge.END)
-      }
-    }
-    /* 与内容层同一套：matchParent + ignoreLayoutSafeArea ⇒ 盒子铺满整窗（真机已验证生效） */
-    .width(LayoutPolicy.matchParent)
-    .height(LayoutPolicy.matchParent)
-    .justifyContent(this.handSide === 'left' ? FlexAlign.Start : FlexAlign.End)
-    .alignItems(VerticalAlign.Bottom)
-    .padding({ left: 20, right: 20, bottom: this.navBottomVp + 20 })
-    .hitTestBehavior(HitTestMode.Transparent)
-  }
-
   // ---------------------------------------------------------------- HDS 顶栏(对齐 HDS 设计系统)
 
-  /** 顶栏主标题:跟随当前分区(与抽屉项同一批字符串资源) */
+  /** 顶栏主标题:代理 / 订阅 / 设置(设置二级页显示分区名) */
   private sectionTitle(): ResourceStr {
     if (this.activeTab === 1) {
-      return $r('app.string.nav_groups');
+      return $r('app.string.tab_subscriptions');
     }
     if (this.activeTab === 2) {
-      return $r('app.string.nav_route');
+      if (this.settingsSection.length > 0) {
+        const index = SETTINGS_SECTION_IDS.indexOf(this.settingsSection);
+        if (index >= 0) {
+          return SETTINGS_SECTION_LABELS[index];
+        }
+      }
+      return $r('app.string.tab_settings');
     }
-    if (this.activeTab === 3) {
-      return $r('app.string.settings_title');
-    }
-    if (this.activeTab === 4) {
-      return $r('app.string.logs');
-    }
-    if (this.activeTab === 5) {
-      return $r('app.string.nav_tools');
-    }
-    if (this.activeTab === 6) {
-      return $r('app.string.nav_about');
-    }
-    return $r('app.string.nav_config');
+    return $r('app.string.tab_proxy');
   }
 
-
-  /**
-   * 顶栏内容（自绘）：抽屉入口(☰) + 分区标题 + 搜索/添加/连接/溢出 四个动作；**整行跟交互手镜像**。
-   *
-   * ★ 镜像方向的唯一判据：**☰ 必须待在手的那一侧**——和抽屉滑出侧、FAB 贴边侧保持一致。
-   *   handSide==='left'  → 抽屉从左出(drawerOverlay FlexAlign.Start)、FAB 贴左 ⇒ ☰ 也在左；
-   *   handSide==='right' → 全部镜像到右边。
-   *   (2.0.19 真机:这里跟抽屉反了 —— 抽屉在左、☰ 却在右，用户指出"左右手搞反了"。)
-   */
+  /** 顶栏内容(自绘):标题 + 右侧动作;设置二级页左侧带返回键 */
   @Builder
   private titleStackBuilder() {
-    if (this.handSide === 'left') {
-      /* 左手：☰ 贴左拇指，标题左对齐，动作按钮挪到右端 */
-      Row({ space: 4 }) {
-        this.titleDrawerButton()
-        Text(this.sectionTitle())
-          .fontSize(21)
-          .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_1'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .layoutWeight(1)
-        this.titleActionCluster()
+    Row({ space: 4 }) {
+      if (this.activeTab === 2 && this.settingsSection.length > 0) {
+        GlowIconButton({
+          symbol: $r('sys.symbol.chevron_left'),
+          iconSize: 22,
+          iconColor: $r('app.color.text_1'),
+          onTap: () => {
+            this.settingsSection = '';
+          }
+        })
       }
-      .width('100%')
-      .alignItems(VerticalAlign.Center)
-      .transition(TransitionEffect.move(TransitionEdge.START).animation({ duration: 220, curve: Curve.Friction }))
-    } else {
-      /* 右手：动作按钮贴右拇指，标题右对齐，☰ 挪到左端 */
-      Row({ space: 4 }) {
-        this.titleActionCluster()
-        Text(this.sectionTitle())
-          .fontSize(21)
-          .fontWeight(FontWeight.Bold)
-          .fontColor($r('app.color.text_1'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .layoutWeight(1)
-          .textAlign(TextAlign.End)
-        this.titleDrawerButton()
-      }
-      .width('100%')
-      .alignItems(VerticalAlign.Center)
-      .transition(TransitionEffect.move(TransitionEdge.END).animation({ duration: 220, curve: Curve.Friction }))
-    }
-  }
-
-  /** 抽屉入口（三条横线）；⚠️ 触发走 onTouch(Up)：stackBuilder 里 Button.onClick 不回调 */
-  @Builder
-  private titleDrawerButton() {
-    Button({ type: ButtonType.Normal, stateEffect: false }) {
-      SymbolGlyph($r('sys.symbol.line_3_horizontal'))
+      Text(this.sectionTitle())
         .fontSize(22)
-        .fontColor([$r('app.color.text_1')])
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_1'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
+      this.titleActionCluster()
     }
-    .width(44)
-    .height(44)
-    .borderRadius(12)
-    .backgroundColor(Color.Transparent)
+    .width('100%')
+    /* 对齐官方 App:标题左边距与页面卡片一致(列表左右 14vp),右侧图标留 6vp 呼吸位。
+       HDS 的自绘 stackBuilder 不会替我们补边距,不加就会顶到屏幕边缘。 */
+    .padding({ left: 14, right: 6 })
+    .alignItems(VerticalAlign.Center)
     .id('nbTitleProbe')
-    .visualEffect(pressLightEffect(this.litKey === 'tb:drawer', true))
-    .onTouch((event: TouchEvent) => {
-      if (event.type === TouchType.Down) {
-        this.litKey = 'tb:drawer';
-      } else if (event.type === TouchType.Up) {
-        this.litKey = '';
-        this.openDrawer();
-      } else if (event.type === TouchType.Cancel) {
-        this.litKey = '';
-      }
-    })
   }
 
-  /** 顶栏动作按钮组：搜索 / 添加 / 连接 / 溢出菜单 */
+  /** 顶栏动作按钮组:代理页 = 溢出菜单;订阅页 = 新增订阅 + 列表/块状切换 */
   @Builder
   private titleActionCluster() {
     Row({ space: 4 }) {
-      GlowIconButton({
-        symbol: $r('sys.symbol.magnifyingglass'),
-        iconSize: 20,
-        iconColor: $r('app.color.text_1'),
-        onTap: () => {
-          if (this.searchVisible) {
-            /* 已在搜索态:再点一次搜索图标 = 关闭(用户 2026-10-17) */
-            this.closeNodeSearch();
-            return;
+      if (this.activeTab === 1) {
+        GlowIconButton({
+          symbol: $r('sys.symbol.plus'),
+          iconSize: 22,
+          iconColor: $r('app.color.text_1'),
+          onTap: () => {
+            this.addEntryDialog.open();
           }
-          this.searchVisible = true;
-          /* 打开即聚焦弹键盘;延后到输入框挂载完成,抢不到焦点也不影响手动点输入框 */
-          setTimeout(() => {
-            try {
-              this.getUIContext().getFocusController().requestFocus('nodeSearchInput');
-            } catch (e) {
-              // 焦点不可用时保持旧行为(用户手动点输入框)
-            }
-          }, 120);
-        }
-      })
-      GlowIconButton({
-        symbol: $r('sys.symbol.plus'),
-        iconSize: 22,
-        iconColor: $r('app.color.text_1'),
-        onTap: () => {
-          this.addEntryDialog.open();
-        }
-      })
-      GlowIconButton({
-        symbol: $r('sys.symbol.link'),
-        iconSize: 20,
-        iconColor: $r('app.color.text_1'),
-        onTap: () => {
-          router.pushUrl({ url: 'pages/ConnectionsPage' });
-        }
-      })
-      Button({ type: ButtonType.Normal, stateEffect: false }) {
-        SymbolGlyph($r('sys.symbol.more'))
-          .fontSize(20)
-          .fontColor([$r('app.color.text_1')])
+        })
+        /* 列表 / 块状视图切换(参考 FlClash):图标显示"将要切到的视图" */
+        GlowIconButton({
+          symbol: this.nodeViewMode === 'grid' ? $r('sys.symbol.list_square') : $r('sys.symbol.square_grid_2x2'),
+          iconSize: 20,
+          iconColor: $r('app.color.text_1'),
+          onTap: () => {
+            this.nodeViewMode = this.nodeViewMode === 'grid' ? 'list' : 'grid';
+          }
+        })
       }
-      .id(OVERFLOW_MENU_ANCHOR)
-      .width(44)
-      .height(44)
-      .borderRadius(12)
-      .backgroundColor(Color.Transparent)
-      .visualEffect(pressLightEffect(this.litKey === 'tb:more', true))
-      .onTouch((event: TouchEvent) => {
-        if (event.type === TouchType.Down) {
-          this.litKey = 'tb:more';
-        } else if (event.type === TouchType.Up) {
-          this.litKey = '';
-          this.openOverflowMenu();
-        } else if (event.type === TouchType.Cancel) {
-          this.litKey = '';
-        }
-      })
     }
     .alignItems(VerticalAlign.Center)
   }
@@ -2189,7 +2127,6 @@ struct Index {
     };
     add($r('app.string.update_current_subscription'), 'update_sub', false);
     add($r('app.string.clear_traffic_statistics'), 'clear_traffic', false);
-    add($r('app.string.test_all_nodes'), 'test_all', false);
     add($r('app.string.clear_test_results'), 'clear_results', false);
     add($r('app.string.dedup_action'), 'dedup', false);
     add($r('app.string.delete_unavailable'), 'delete_unavailable', false);
@@ -2211,8 +2148,6 @@ struct Index {
         this.updateCurrentSubscription();
       } else if (value === 'clear_traffic') {
         this.clearTrafficStatistics();
-      } else if (value === 'test_all') {
-        this.runSpeedTest();
       } else if (value === 'clear_results') {
         this.clearTestResults('__all__');
       } else if (value === 'dedup') {
@@ -2230,77 +2165,625 @@ struct Index {
   }
   // ---------------------------------------------------------------- 内容切换 + 骨架
 
+  // ---------------------------------------------------------------- 首页仪表盘(连接 / 当前节点 / 内存 / 模式)
+
+  private currentNodeName(): ResourceStr {
+    const p = this.selectedProfile();
+    return p === undefined ? $r('app.string.home_no_node') : p.name;
+  }
+
+  private currentNodeMeta(): string {
+    const p = this.selectedProfile();
+    if (p === undefined) {
+      return '';
+    }
+    const type = profileTypeLabel(p.type);
+    return p.server.length > 0 ? `${type} · ${p.server}` : type;
+  }
+
+  /** 中央大连接键:连接中显示转圈,运行时显示暂停图标 */
   @Builder
-  private activeContent() {
-    if (this.activeTab === 0) {
-      this.configFragment()
-    } else if (this.activeTab === 1) {
-      GroupPage({
-        onDataChanged: () => {
-          this.refresh();
-        },
-        onOpenDrawer: () => {
-          this.openDrawer();
+  private connectOrb() {
+    Button({ type: ButtonType.Circle, stateEffect: false }) {
+      Stack() {
+        if (this.statusText === 'connecting' || this.statusText === 'switching') {
+          LoadingProgress()
+            .width(38)
+            .height(38)
+            .color($r('app.color.surface'))
+        } else {
+          SymbolGlyph(this.isRunning ? $r('sys.symbol.pause_fill') : $r('sys.symbol.play_fill'))
+            .fontSize(this.isRunning ? 40 : 36)
+            .fontColor([$r('app.color.surface')])
         }
-      })
-    } else if (this.activeTab === 2) {
-      RouteRulesPanel({
-        onOpenDrawer: () => {
-          this.openDrawer();
+      }
+    }
+    .width(116)
+    .height(116)
+    .backgroundColor(this.isRunning ? $r('app.color.fab_running') : $r('app.color.fab_bg'))
+    .shadow({ radius: 24, color: 'rgba(0,0,0,0.22)', offsetY: 8 })
+    .visualEffect(pressLightEffect(this.litKey === 'home:connect', true))
+    .scale({ x: this.litKey === 'home:connect' ? 0.94 : 1.0, y: this.litKey === 'home:connect' ? 0.94 : 1.0 })
+    .onTouch((event: TouchEvent) => {
+      if (event.type === TouchType.Down) {
+        this.litKey = 'home:connect';
+      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+        this.litKey = '';
+      }
+    })
+    .onClick(() => {
+      this.toggleVpn();
+    })
+  }
+
+  @Builder
+  private homeDashboard() {
+    Column() {
+      Column({ space: 12 }) {
+        Text($r('app.string.home_current_node'))
+          .fontSize(12)
+          .fontColor($r('app.color.text_3'))
+        Text(this.currentNodeName())
+          .fontSize(19)
+          .fontWeight(700)
+          .fontColor($r('app.color.text_1'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .padding({ left: 20, right: 20 })
+        if (this.currentNodeMeta().length > 0) {
+          Text(this.currentNodeMeta())
+            .fontSize(11.5)
+            .fontColor($r('app.color.text_3'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .padding({ left: 20, right: 20 })
         }
-      })
-    } else if (this.activeTab === 3) {
-      SettingsPage({
-        onSettingsChanged: (settings: AppSettings) => {
-          this.settings = settings;
-        },
-        onOpenDrawer: () => {
-          this.openDrawer();
+        this.connectOrb()
+        Text(this.statusDisplay())
+          .fontSize(13)
+          .fontColor($r('app.color.text_2'))
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .justifyContent(FlexAlign.Center)
+
+      /* 内存占用 + 出站模式:两张信息卡(参考 FlClash);
+         出站模式直接列出三档可点,内存卡用图标填补纵向空间 */
+      Row({ space: 10 }) {
+        Column({ space: 4 }) {
+          Text($r('app.string.home_memory_label'))
+            .fontSize(11.5)
+            .fontColor($r('app.color.text_3'))
+            .width('100%')
+            .textAlign(TextAlign.Center)
+          Blank()
+          SymbolGlyph($r('sys.symbol.memory_module'))
+            .fontSize(38)
+            .fontColor([$r('app.color.text_3')])
+          Blank()
+          Text(`${this.memMb} MB`)
+            .fontSize(20)
+            .fontWeight(700)
+            .fontColor($r('app.color.text_1'))
+            .width('100%')
+            .textAlign(TextAlign.Center)
         }
-      })
-    } else if (this.activeTab === 4) {
-      LogPanel({
-        onOpenDrawer: () => {
-          this.openDrawer();
+        .alignItems(HorizontalAlign.Center)
+        .layoutWeight(1)
+        .height(166)
+        .padding({ left: 14, right: 14, top: 12, bottom: 12 })
+        .backgroundColor($r('app.color.surface'))
+        .borderRadius(16)
+        .shadow({ radius: 6, color: $r('app.color.shadow_color'), offsetY: 1 })
+
+        Column({ space: 6 }) {
+          Text($r('app.string.outbound_mode'))
+            .fontSize(11.5)
+            .fontColor($r('app.color.text_3'))
+          ForEach(OUTBOUND_MODES, (mode: string, index: number) => {
+            Row({ space: 8 }) {
+              Text(OUTBOUND_MODE_LABELS[index])
+                .fontSize(14.5)
+                .fontWeight(this.settings.mode === mode ? 700 : 500)
+                .fontColor(this.settings.mode === mode ? $r('app.color.primary') : $r('app.color.text_1'))
+                .layoutWeight(1)
+              if (this.settings.mode === mode) {
+                SymbolGlyph($r('sys.symbol.checkmark'))
+                  .fontSize(15)
+                  .fontColor([$r('app.color.primary')])
+              }
+            }
+            .width('100%')
+            .height(34)
+            .padding({ left: 10, right: 10 })
+            .borderRadius(10)
+            .backgroundColor(this.settings.mode === mode ? $r('app.color.surface_selected') : Color.Transparent)
+            .visualEffect(pressLightEffect(this.litKey === `homemode:${mode}`, false))
+            .onTouch((event: TouchEvent) => {
+              if (event.type === TouchType.Down) {
+                this.litKey = `homemode:${mode}`;
+              } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+                this.litKey = '';
+              }
+            })
+            .onClick(() => {
+              if (this.settings.mode !== mode) {
+                this.switchOutboundMode(mode);
+              }
+            })
+          }, (mode: string) => mode)
         }
-      })
-    } else if (this.activeTab === 5) {
-      ToolsPage({
-        onOpenDrawer: () => {
-          this.openDrawer();
-        }
-      })
-    } else {
-      AboutPage({
-        onOpenDrawer: () => {
-          this.openDrawer();
-        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1.45)
+        .height(166)
+        .padding({ left: 12, right: 12, top: 12, bottom: 12 })
+        .backgroundColor($r('app.color.surface'))
+        .borderRadius(16)
+        .shadow({ radius: 6, color: $r('app.color.shadow_color'), offsetY: 1 })
+      }
+      .width('100%')
+      /* 整体上移:让开底部悬浮胶囊并留出呼吸位 */
+      .padding({
+        left: UiSpec.PAGE_PADDING,
+        right: UiSpec.PAGE_PADDING,
+        top: 12,
+        bottom: TAB_BAR_CONTENT_HEIGHT + this.navBottomVp + 46
       })
     }
+    .width('100%')
+    .height('100%')
+  }
+
+  /** 当前出站模式文案 */
+  private currentModeLabel(): Resource {
+    const index = OUTBOUND_MODES.indexOf(this.settings.mode);
+    return index < 0 ? OUTBOUND_MODE_LABELS[0] : OUTBOUND_MODE_LABELS[index];
+  }
+
+
+  // ---------------------------------------------------------------- 订阅页(按订阅折叠展示节点)
+
+  private isCollapsed(key: string): boolean {
+    return this.collapsedKeys.includes(key);
+  }
+
+  private toggleCollapsed(key: string): void {
+    const next = this.collapsedKeys.slice();
+    const index = next.indexOf(key);
+    if (index >= 0) {
+      next.splice(index, 1);
+    } else {
+      next.push(key);
+    }
+    this.collapsedKeys = next;
+  }
+
+  /** 订阅内排序:延迟升序(未测/失败的排最后),同延迟按节点名 */
+  private sortLatencyOf(p: Profile): number {
+    let ms = this.latencies[p.id];
+    if (ms === undefined && p.latencyMs !== 0) {
+      ms = p.latencyMs;
+    }
+    if (ms === undefined || ms <= 0) {
+      return Number.MAX_SAFE_INTEGER;
+    }
+    return ms;
+  }
+
+  private compareNode(a: Profile, b: Profile): number {
+    const la = this.sortLatencyOf(a);
+    const lb = this.sortLatencyOf(b);
+    if (la !== lb) {
+      return la - lb;
+    }
+    return a.name.localeCompare(b.name);
+  }
+
+  /** 订阅页的行模型:header = 订阅/未分组标题行,node = 节点卡 */
+  private accordionRows(): Array<AccordionRow> {
+    const rows: Array<AccordionRow> = [];
+    for (const sub of this.subscriptions) {
+      const nodes = this.profiles
+        .filter((p: Profile) => p.subUrl === sub.url)
+        .sort((a: Profile, b: Profile) => this.compareNode(a, b));
+      const header = new AccordionRow();
+      header.kind = 'header';
+      header.key = `sub:${sub.url}`;
+      header.title = sub.name.length > 0 ? sub.name : sub.url;
+      header.subtitle = sub.url;
+      header.count = nodes.length;
+      header.sourceKey = sub.url;
+      rows.push(header);
+      if (!this.isCollapsed(header.key)) {
+        for (const p of nodes) {
+          rows.push(AccordionRow.ofProfile(p));
+        }
+      }
+    }
+
+    /* 本地/未分组节点(不属于任何订阅) */
+    const locals = this.profiles
+      .filter((p: Profile) => p.subUrl.length === 0)
+      .sort((a: Profile, b: Profile) => this.compareNode(a, b));
+    if (locals.length > 0) {
+      const localHeader = new AccordionRow();
+      localHeader.kind = 'header';
+      localHeader.key = LOCAL_SECTION_KEY;
+      localHeader.title = $r('app.string.home_local_section');
+      localHeader.count = locals.length;
+      localHeader.sourceKey = '';
+      rows.push(localHeader);
+      if (!this.isCollapsed(localHeader.key)) {
+        for (const p of locals) {
+          rows.push(AccordionRow.ofProfile(p));
+        }
+      }
+    }
+    return rows;
+  }
+
+  /** 标题行对应的一组节点(测速用) */
+  private rowTargets(row: AccordionRow): Array<Profile> {
+    if (row.key === LOCAL_SECTION_KEY) {
+      return this.profiles.filter((p: Profile) => p.subUrl.length === 0);
+    }
+    return this.profiles.filter((p: Profile) => p.subUrl === row.sourceKey);
+  }
+
+  @Builder
+  private accordionHeader(row: AccordionRow) {
+    Row({ space: 10 }) {
+      Column({ space: 3 }) {
+        Row({ space: 6 }) {
+          Text(row.title)
+            .fontSize(15)
+            .fontWeight(700)
+            .fontColor($r('app.color.text_1'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .constraintSize({ maxWidth: '70%' })
+          Text($r('app.string.group_node_count', row.count))
+            .fontSize(11.5)
+            .fontColor($r('app.color.text_3'))
+        }
+        .width('100%')
+
+        if (row.subtitle.length > 0) {
+          Text(row.subtitle)
+            .fontSize(10.5)
+            .fontColor($r('app.color.text_3'))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+        }
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+
+      /* 单个订阅:更新 + 独立测速 */
+      if (row.key !== LOCAL_SECTION_KEY) {
+        Text(this.updatingSubUrl === row.sourceKey
+          ? $r('app.string.updating')
+          : $r('app.string.update_action'))
+          .fontSize(12.5)
+          .fontWeight(600)
+          .fontColor($r('app.color.text_2'))
+          .padding({ left: 6, right: 6, top: 6, bottom: 6 })
+          .onClick(() => {
+            this.updateSubByUrl(row.sourceKey);
+          })
+      }
+
+      Text(this.testing ? $r('app.string.speed_testing') : $r('app.string.speed_test'))
+        .fontSize(12.5)
+        .fontWeight(600)
+        .fontColor($r('app.color.mono'))
+        .padding({ left: 6, right: 6, top: 6, bottom: 6 })
+        .onClick(() => {
+          this.runSpeedTestFor(this.rowTargets(row));
+        })
+
+      SymbolGlyph(this.isCollapsed(row.key) ? $r('sys.symbol.chevron_down') : $r('sys.symbol.chevron_up'))
+        .fontSize(16)
+        .fontColor([$r('app.color.text_3')])
+    }
+    .width('100%')
+    .padding({ left: 14, right: 12, top: 12, bottom: 12 })
+    .backgroundColor($r('app.color.surface'))
+    .borderRadius(14)
+    .visualEffect(pressLightEffect(this.litKey === `acc:${row.key}`, false))
+    .onTouch((event: TouchEvent) => {
+      if (event.type === TouchType.Down) {
+        this.litKey = `acc:${row.key}`;
+      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+        this.litKey = '';
+      }
+    })
+    .onClick(() => {
+      this.toggleCollapsed(row.key);
+    })
+  }
+
+  @Builder
+  private subscriptionsFragment() {
+    Column() {
+      if (this.profiles.length === 0) {
+        Column({ space: 10 }) {
+          Text($r('app.string.no_profiles_title'))
+            .fontSize(15).fontWeight(600).fontColor($r('app.color.text_2'))
+          Text($r('app.string.no_profiles_hint'))
+            .fontSize(12).fontColor($r('app.color.text_3'))
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .justifyContent(FlexAlign.Center)
+      } else if (this.nodeViewMode === 'grid') {
+        Grid(this.gridScroller) {
+          GridItem() {
+            Row().width('100%').height(Math.max(0, this.contentTopInset - 8))
+          }
+          .columnStart(0)
+          .columnEnd(this.gridColumns - 1)
+
+          ForEach(this.accordionRows(), (row: AccordionRow) => {
+            if (row.kind === 'header') {
+              GridItem() {
+                this.accordionHeader(row)
+              }
+              .columnStart(0)
+              .columnEnd(this.gridColumns - 1)
+            } else {
+              GridItem() {
+                this.gridNodeCard(row.profile)
+              }
+            }
+          }, (row: AccordionRow) => row.key)
+
+          /* 尾部占位:让最后一张卡能滑到悬浮胶囊上方,同时滚动时条目从胶囊后面滑出 */
+          GridItem() {
+            Row()
+              .width('100%')
+              .height(TAB_BAR_CONTENT_HEIGHT + this.navBottomVp + 24)
+          }
+          .columnStart(0)
+          .columnEnd(this.gridColumns - 1)
+        }
+        .columnsTemplate(this.gridTemplate())
+        .columnsGap(8)
+        .rowsGap(8)
+        .edgeEffect(EdgeEffect.Spring)
+        .scrollBar(BarState.Off)
+        .layoutWeight(1)
+        .width('100%')
+        .padding({ left: 14, right: 14 })
+        .clip(false)
+        .id('nbGridProbe')
+      } else {
+        List({ space: 8, scroller: this.configScroller }) {
+          ListItem() {
+            Row().width('100%').height(Math.max(0, this.contentTopInset - 8))
+          }
+          .selectable(false)
+
+          ForEach(this.accordionRows(), (row: AccordionRow) => {
+            ListItem() {
+              if (row.kind === 'header') {
+                this.accordionHeader(row)
+              } else {
+                this.nodeCard(row.profile)
+              }
+            }
+          }, (row: AccordionRow) => row.key)
+
+          /* 尾部占位:最后一张卡能滚到胶囊上方,滚动时条目从胶囊后面滑出 */
+          ListItem() {
+            Row()
+              .width('100%')
+              .height(TAB_BAR_CONTENT_HEIGHT + this.navBottomVp + 24)
+          }
+          .selectable(false)
+        }
+        .edgeEffect(EdgeEffect.Spring)
+        .scrollBar(BarState.Off)
+        .layoutWeight(1)
+        .width('100%')
+        .padding({ left: 14, right: 14 })
+        .clip(false)
+        .id('nbListProbe')
+      }
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  /** 每个 Tab 的内容壳:顶部让位 + 底部让位(悬浮胶囊) */
+  @Builder
+  private pageShell(tab: number) {
+    Column() {
+      Column() {
+        if (tab === 0) {
+          this.homeDashboard()
+        } else if (tab === 1) {
+          this.subscriptionsFragment()
+        } else {
+          this.settingsContent()
+        }
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .id(`nbBodyProbe${tab}`)
+      /* 首页用实测让位;订阅页用列表占位项让位;设置页比实测再上提 10vp,与其它页观感对齐 */
+      .padding({ top: tab === 0 ? this.contentTopInset : (tab === 2 ? Math.max(0, this.contentTopInset - 10) : 0) })
+      .onAreaChange((_oldArea: Area, _newArea: Area) => {
+        this.calibrateTopInset();
+      })
+    }
+    .width('100%')
+    .height('100%')
+    /* 订阅页要让条目从底部胶囊后面滑出来 ⇒ 不在这里留白,改由列表尾部占位项让位 */
+    .padding({ bottom: tab === 2 ? TAB_BAR_CONTENT_HEIGHT + this.navBottomVp + 24 : 0 })
+  }
+
+  /** 设置 Tab:二级分区页 + 入口首页 */
+  @Builder
+  private settingsContent() {
+    if (this.settingsSection === 'general') {
+      Column() {
+        SettingsPage({
+          onSettingsChanged: (settings: AppSettings) => {
+            this.settings = settings;
+          }
+        })
+      }
+      .width('100%')
+      .height('100%')
+      .transition(this.settingsPaneTransition())
+    } else if (this.settingsSection === 'groups') {
+      Column() {
+        GroupPage({
+          onDataChanged: () => {
+            this.refresh();
+          },
+          onAddSubscription: () => {
+            this.addEntryDialog.open();
+          }
+        })
+      }
+      .width('100%')
+      .height('100%')
+      .transition(this.settingsPaneTransition())
+    } else if (this.settingsSection === 'route') {
+      Column() {
+        RouteRulesPanel()
+      }
+      .width('100%')
+      .height('100%')
+      .transition(this.settingsPaneTransition())
+    } else if (this.settingsSection === 'logs') {
+      Column() {
+        LogPanel()
+      }
+      .width('100%')
+      .height('100%')
+      .transition(this.settingsPaneTransition())
+    } else if (this.settingsSection === 'tools') {
+      Column() {
+        ToolsPage()
+      }
+      .width('100%')
+      .height('100%')
+      .transition(this.settingsPaneTransition())
+    } else if (this.settingsSection === 'about') {
+      Column() {
+        AboutPage()
+      }
+      .width('100%')
+      .height('100%')
+      .transition(this.settingsPaneTransition())
+    } else {
+      Column() {
+        this.settingsHub()
+      }
+      .width('100%')
+      .height('100%')
+      .transition(this.settingsPaneTransition())
+    }
+  }
+
+  /** 设置页二级分区切换的过渡:淡入 + 轻微上浮(来回都是同一套,不区分方向) */
+  private settingsPaneTransition(): TransitionEffect {
+    return TransitionEffect.OPACITY
+      .animation({ duration: 180, curve: Curve.FastOutSlowIn })
+      .combine(TransitionEffect.translate({ y: 12 })
+        .animation({ duration: 220, curve: Curve.FastOutSlowIn }));
+  }
+
+  /** 设置首页:把原抽屉里的配置/分组/路由/日志/工具/关于收敛成二级入口 */
+  @Builder
+  private settingsHub() {
+    Scroll() {
+      Column({ space: 10 }) {
+        ForEach(SETTINGS_SECTION_IDS, (id: string, index: number) => {
+          Row({ space: 14 }) {
+            Row() {
+              SymbolGlyph(SETTINGS_SECTION_SYMBOLS[index])
+                .fontSize(19)
+                .fontColor([$r('app.color.primary')])
+            }
+            .width(38)
+            .height(38)
+            .justifyContent(FlexAlign.Center)
+            .borderRadius(11)
+            .backgroundColor($r('app.color.surface_selected'))
+
+            Column({ space: 3 }) {
+              Text(SETTINGS_SECTION_LABELS[index])
+                .fontSize(15)
+                .fontWeight(600)
+                .fontColor($r('app.color.text_1'))
+                .width('100%')
+              Text(SETTINGS_SECTION_DESCS[index])
+                .fontSize(11.5)
+                .fontColor($r('app.color.text_3'))
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .width('100%')
+            }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
+
+            SymbolGlyph($r('sys.symbol.chevron_right'))
+              .fontSize(16)
+              .fontColor([$r('app.color.text_3')])
+          }
+          .width('100%')
+          .padding({ left: 14, right: 14, top: 12, bottom: 12 })
+          .backgroundColor($r('app.color.surface'))
+          .borderRadius(14)
+          .shadow({ radius: 6, color: $r('app.color.shadow_color'), offsetY: 1 })
+          .visualEffect(pressLightEffect(this.litKey === `settings:${id}`, false))
+          .scale({
+            x: this.litKey === `settings:${id}` ? 0.98 : 1.0,
+            y: this.litKey === `settings:${id}` ? 0.98 : 1.0
+          })
+          .onTouch((event: TouchEvent) => {
+            if (event.type === TouchType.Down) {
+              this.litKey = `settings:${id}`;
+            } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+              this.litKey = '';
+            }
+          })
+          /* 用 onClick 而不是「TouchType.Up 里跳转」:列表滚动时 Up 也会到这一行,
+             按住条目一滑再松手就会被误判成点击直接进二级页。onClick 在滚动手势
+             接管后不会触发,只有真正的点按才进。 */
+          .onClick(() => {
+            this.settingsSection = id;
+          })
+        }, (id: string) => id)
+
+        Text(this.appVersion.length > 0 ? `PaperBox v${this.appVersion}` : 'PaperBox')
+          .fontSize(10.5)
+          .fontColor($r('app.color.text_3'))
+          .width('100%')
+          .textAlign(TextAlign.Center)
+          .padding({ top: 10, bottom: 6 })
+      }
+      .width('100%')
+      .padding({ left: 14, right: 14, top: 4 })
+    }
+    .scrollBar(BarState.Off)
+    .edgeEffect(EdgeEffect.Spring)
+    .width('100%')
+    .height('100%')
+    /* Scroll 默认把内容垂直居中(容器比内容高时),设置首页条目少就会整体沉到屏幕中间;
+       与其它页一致,内容一律贴顶。 */
+    .align(Alignment.Top)
   }
 
   @Builder
   private titleBottomBuilder() {
-    /* 模式行 + 分组条只在首页显示(用户 2026-10-17):其它分区页顶部不再带订阅分组条。
-       nbBarBottomProbe 也没了 ⇒ calibrateTopInset 回退到 nbTitleProbe(标题栏底边),让位照常。
-       ⚠️ 搜索态(用户 2026-10-17):搜索行要与分组条**同一条带互换**,底部带总高恒定 ——
-       高度一变 HDS 会整条重排标题栏(顶部按钮闪一下),且列表让位量来不及重算,
-       分组条会压到节点卡上(真机截图确认过两个坑)。
-       行距(用户 2026-10-17):搜索行↔模式行、模式行↔分组条一律 8vp,与节点卡间距一致;
-       两个状态下内容总高都凑成 68(32+8+28 / 28+8+32),底部带高度才能恒定。 */
-    if (this.activeTab === 0) {
-      Column({ space: 8 }) {
-        if (this.searchVisible) {
-          this.searchInputRow()
-        }
-        this.modeSwitchRow()
-        if (!this.searchVisible) {
-          this.groupTabBar()
-        }
-      }
-      .width('100%')
-      .id('nbBarBottomProbe')
-    }
+    /* 代理模式已挪到首页仪表盘、分组折叠条已挪到订阅页 ⇒ 标题栏不再挂底部带。
+       高度在 shellTitleBar 里固定为 0(不再需要 nbBarBottomProbe)。 */
   }
 
   /**
@@ -2352,9 +2835,8 @@ struct Index {
           builder: (): void => {
             this.titleBottomBuilder();
           },
-          /* 非首页不再有分组条:高度也要归零,否则留一条空带。
-             底部带恒 68(两个搜索/常规态内容都是 32+8+28 / 28+8+32,见 titleBottomBuilder) */
-          height: this.activeTab === 0 ? 68 : 0
+          /* 底部带已取消(模式行在首页、分组条在订阅页) ⇒ 高度恒 0 */
+          height: 0
         }
       }
     };
@@ -2384,29 +2866,60 @@ struct Index {
   build() {
     /* 外壳：**HdsNavigation 开着官方标题栏**（它自带渐变模糊 + 沉浸光感材质），
        内容走 matchParent + ignoreLayoutSafeArea 铺满整窗 ⇒ 列表能从标题栏后面滚过去；
-       FAB 与抽屉是根 Stack 的兄弟（在 Navigation 之后）⇒ 抽屉能盖住标题栏。
-       列表顶部垫一个"标题栏等高"的占位项（contentTopInset 由 nbBarBottomProbe 实测量出）。 */
+       连接 FAB 是根 Stack 的兄弟（在 Navigation 之后）⇒ 盖住内容。
+       底部 Tab 用 **HdsTabs.barFloatingStyle**：官方悬浮胶囊 + 沉浸光感材质
+       （systemMaterialEffect: IMMERSIVE + EXQUISITE，与顶栏同一视觉语言）。 */
     Stack({ alignContent: Alignment.TopStart }) {
       HdsNavigation(this.pathStack) {
-        Column() {
-          Column() {
-            this.activeContent()
+        HdsTabs({ barPosition: BarPosition.End, index: this.activeTab, controller: this.tabsController }) {
+          TabContent() {
+            this.pageShell(0)
           }
-          .width('100%')
-          .layoutWeight(1)
-          .id('nbBodyProbe')
-          .onAreaChange((_oldArea: Area, _newArea: Area) => {
-            this.calibrateTopInset();
-          })
-          /* 配置页列表自己用【占位项】让位(见 configFragment) ⇒ 容器不再留白;
-             其它分区页还没接占位项，用 contentTopInset 让位 */
-          .padding({ top: this.activeTab === 0 ? 0 : this.contentTopInset })
-          if (this.isRunning && (this.activeTab === 0 || this.settings.showBottomBar)) {
-            this.statsBar()
+          .tabBar(this.tabBarItem(0))
+
+          TabContent() {
+            this.pageShell(1)
           }
+          .tabBar(this.tabBarItem(1))
+
+          TabContent() {
+            this.pageShell(2)
+          }
+          .tabBar(this.tabBarItem(2))
         }
         .width(LayoutPolicy.matchParent)
         .height(LayoutPolicy.matchParent)
+        .barMode(BarMode.Fixed)
+        .barHeight(TAB_BAR_CONTENT_HEIGHT)
+        .scrollable(false)
+        /* 内容从胶囊后面滚过 ⇒ 玻璃材质才有"透出内容"的沉浸感 */
+        .barOverlap(true)
+        .barBackgroundColor(Color.Transparent)
+        /* 悬浮胶囊:固定宽度 + 左右/底部留白 + HDS 沉浸光感材质 */
+        .barFloatingStyle({
+          barWidth: { smallWidth: 300, mediumWidth: 320, largeWidth: 340 },
+          barSideMargin: 24,
+          barBottomMargin: this.navBottomVp + 10,
+          systemMaterialEffect: {
+            materialType: hdsMaterial.MaterialType.IMMERSIVE,
+            materialLevel: hdsMaterial.MaterialLevel.EXQUISITE
+          },
+          /* 智感握姿已移除:胶囊固定底部居中 */
+          adaptToHandedness: false,
+          lightColor: $r('app.color.primary')
+        })
+        .onChange((index: number) => {
+          if (this.activeTab === index) {
+            return;
+          }
+          /* 兜底路径(非点击触发的切换)同样要把订阅列表退回顶部,避免标题栏模糊状态带到别的页 */
+          if (this.activeTab === 1) {
+            this.resetSubscriptionScroll();
+          }
+          this.activeTab = index;
+          /* 离开设置时回到入口首页,避免下次进来还停在上次的分区 */
+          this.settingsSection = '';
+        })
         .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
         .backgroundColor($r('app.color.bg_page'))
         .expandSafeArea([SafeAreaType.SYSTEM, SafeAreaType.CUTOUT], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
@@ -2414,8 +2927,8 @@ struct Index {
       .titleMode(HdsNavigationTitleMode.MINI)
       .mode(NavigationMode.Stack)
       .titleBar(this.shellTitleBar())
-      /* 顶栏渐变模糊要跟着列表滚 ⇒ 必须把列表的 Scroller 交给它 */
-      .bindToScrollable([this.configScroller])
+      /* 顶栏渐变模糊要跟着列表滚 ⇒ 必须把列表的 Scroller 交给它(列表/块状各一个) */
+      .bindToScrollable([this.configScroller, this.gridScroller])
       /* 左上角 HDS 自带的返回箭头没用（本页是根页面，栈里没有上一级）⇒ 关掉 */
       .hideBackButton(true)
       .hideToolBar(true)
@@ -2424,13 +2937,6 @@ struct Index {
          matchParent + ignoreLayoutSafeArea ⇒ 列表仍铺满整窗、能从标题栏后面滚过去。 */
       .height('100%')
       .backgroundColor($r('app.color.bg_page'))
-
-      if (this.activeTab === 0 || this.settings.showBottomBar) {
-        this.fabLayer()
-      }
-
-      /* 抽屉(最后一个兄弟 ⇒ 盖住标题栏与状态栏) */
-      this.drawerOverlay()
     }
     .width('100%')
     .height('100%')

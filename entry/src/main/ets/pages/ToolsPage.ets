@@ -26,12 +26,11 @@ export struct ToolsPage {
   /** 当前被按下的元素 key(测速 / 备份恢复四颗 / 恢复出厂):"按下才亮"靠它逐颗判断 */
   @State litKey: string = '';
   private context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-  onOpenDrawer: () => void = () => {};
 
   private backupFileName(): string {
     const date = new Date();
     const pad = (value: number): string => value < 10 ? `0${value}` : `${value}`;
-    return `nekobox-backup-${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}.json`;
+    return `paperbox-backup-${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}.json`;
   }
 
   private restoreSummary(result: BackupRestoreResult): ResourceStr {

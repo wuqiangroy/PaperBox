@@ -14,3 +14,12 @@ local.properties
 nb_*.jpeg
 layout.json
 l2.json
+
+# 构建中间产物 / 本地工具缓存(不该入库)
+.cxx/
+*.log
+wecode-cpp.db
+wecode-cpp.db-shm
+wecode-cpp.db-wal
+.appanalyzer/
+.preview/

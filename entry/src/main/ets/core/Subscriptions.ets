@@ -332,8 +332,25 @@ async function applyForceResolve(list: Array<Profile>): Promise<void> {
   }
 }
 
+/** 同一订阅的并发更新合并成一次:启动时 Index 与 EntryAbility 会同时触发自动更新,
+ *  重复「下载 + 解析 YAML + 落库」是启动阶段最大的内存与流量峰值来源;
+ *  顺带也防住用户连点「更新」按钮。 */
+const inFlightUpdates: Map<string, Promise<SubUpdateResult>> = new Map<string, Promise<SubUpdateResult>>();
+
+export function updateSubscription(url: string): Promise<SubUpdateResult> {
+  const running = inFlightUpdates.get(url);
+  if (running !== undefined) {
+    return running;
+  }
+  const task: Promise<SubUpdateResult> = doUpdateSubscription(url).finally(() => {
+    inFlightUpdates.delete(url);
+  });
+  inFlightUpdates.set(url, task);
+  return task;
+}
+
 /** 更新单个订阅:条件下载 → 解析 → 原子替换该订阅的节点(保留运行中节点);同时记录流量/到期 */
-export async function updateSubscription(url: string): Promise<SubUpdateResult> {
+async function doUpdateSubscription(url: string): Promise<SubUpdateResult> {
   // 必须最先 initStore:listSubs/saveSubs 依赖 preferences,未初始化时
   // listSubs 会吞掉异常并返回空数组,导致 ETag 校验器永远存不下去。
   await initStore(globalContext());

@@ -6,10 +6,11 @@ import fs from '@ohos.file.fs';
 import notificationManager from '@ohos.notificationManager';
 import notification from '@ohos.notification';
 import wantAgent from '@ohos.app.ability.wantAgent';
+import backgroundTaskManager from '@ohos.resourceschedule.backgroundTaskManager';
 import commonEventManager from '@ohos.commonEventManager';
 import BusinessError from '@ohos.base';
 import { Profile, ProfileGroup, AppSettings } from '../model/Profile';
-import { initStore, loadProfiles, loadGroups, loadSettings, getPendingProfileId, setPendingProfileId, clearPendingProfileId, setRunningProfileId, mutateProfiles, LogStore } from '../model/Store';
+import { initStore, loadProfiles, loadGroups, loadSettings, getPendingProfileId, setPendingProfileId, clearPendingProfileId, getRunningProfileId, setRunningProfileId, mutateProfiles, LogStore } from '../model/Store';
 import { buildCoreConfig, effectiveIpv6Mode } from '../core/ConfigBuilder';
 import { loadRouteRules, RouteRule, loadRemoteRuleSets, RemoteRuleSet } from '../model/RouteRule';
 import { CoreManager } from '../core/CoreManager';
@@ -70,6 +71,12 @@ export default class VpnExtAbility extends VpnExtensionAbility {
   private notificationTotalDown: number = 0;
   private notificationSettings: AppSettings | null = null;
   private notificationGroupName: string = '';
+  /** 心跳定时器:每 5s 重播一次「已连接」状态。扩展被系统回收时没有任何回调,
+   *  UI 端只能靠"收不到心跳"判定 VPN 已死并释放常驻后台任务(否则通知栏会一直挂着)。 */
+  private heartbeatTimer: number = -1;
+  /** 扩展进程自己的长时任务(连续任务)。VPN 数据面跑在 :vpn 进程里,
+   *  必须由这个进程持有长时任务才不会被系统冻结/回收(参考 FlClash 的做法)。 */
+  private keepAliveRunning: boolean = false;
   /** 连续通知发布失败计数:通知被关闭时不再按 speedInterval(1s) 无界重试刷日志。 */
   private notificationFailStreak: number = 0;
   // 网络变化重置连接(功能对齐安卓 networkChangeResetConnections,2.0.2 起默认关)
@@ -326,6 +333,8 @@ export default class VpnExtAbility extends VpnExtensionAbility {
   }
 
   private async doTeardown(silent: boolean): Promise<void> {
+    this.stopHeartbeat();
+    await this.stopKeepAlive();
     this.stopNotificationTrafficPoller();
     this.cancelNotification();
     try {
@@ -368,8 +377,18 @@ export default class VpnExtAbility extends VpnExtensionAbility {
     try {
       const context: common.Context = this.context;
       await initStore(context);
-      const pendingId = this.latestRequestedProfileId.length > 0
+      let pendingId = this.latestRequestedProfileId.length > 0
         ? this.latestRequestedProfileId : await getPendingProfileId();
+      /* 自愈(对齐 FlClash 的重连语义):扩展若是被系统回收后重新拉起,
+         不会有人再带 profileId 进来。此时 running_profile_id 还留着 —— 说明上一次
+         会话不是正常断开 —— 直接用它恢复连接,而不是"保持待命"让 VPN 静默消失。 */
+      if (pendingId.length === 0 && !this.started) {
+        const lastRunningId = await getRunningProfileId();
+        if (lastRunningId.length > 0) {
+          pendingId = lastRunningId;
+          LogStore.addLog('[vpn] 检测到上次会话未正常结束,自动恢复连接');
+        }
+      }
       if (this.started) {
         if (pendingId.length === 0) {
           // UI 进程可能刚被系统回收重建(AppStorage 已重置),必须重播当前状态,
@@ -417,6 +436,7 @@ export default class VpnExtAbility extends VpnExtensionAbility {
     if (pendingId.length === 0) {
       // 保持扩展待命:下一次 startVpnExtensionAbility 会带着新节点再次进入
       LogStore.addLog('[vpn] 暂无待启动节点,扩展保持待命');
+      this.stopHeartbeat();
       this.stopNotificationTrafficPoller();
       this.cancelNotification();
       return;
@@ -603,8 +623,74 @@ export default class VpnExtAbility extends VpnExtensionAbility {
     this.notificationLatencyMs = -1;
     await this.showConnectedNotification(node.name, -1);
     this.startNotificationTrafficPoller();
-    publishVpnStatus(`connected:${node.name}`, true, pendingId);
+    await this.startKeepAlive();
+    this.startHeartbeat();
+    publishVpnStatus(`connected:${node.name}`, true, pendingId,
+      this.keepAliveRunning ? 'true' : 'false');
     await clearPendingProfileId();
+  }
+
+  /**
+   * 扩展进程自己持有 dataTransfer 长时任务(对齐 FlClash):
+   * VPN 数据面跑在 :vpn 进程里,只有这个进程拿到长时任务,退到后台后才不会被
+   * 系统冻结/回收 —— 之前只在 UI 进程申请,扩展进程没有保护,后台一会儿就被杀。
+   * 失败只记日志:UI 进程侧的订阅更新任务与它互不影响。
+   */
+  private async startKeepAlive(): Promise<void> {
+    if (this.keepAliveRunning) {
+      return;
+    }
+    try {
+      const agent = await wantAgent.getWantAgent({
+        wants: [{
+          bundleName: 'com.paperbox.harmonyos',
+          abilityName: 'EntryAbility'
+        }],
+        actionType: wantAgent.OperationType.START_ABILITY,
+        requestCode: 1005,
+        actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
+      });
+      await backgroundTaskManager.startBackgroundRunning(this.context,
+        backgroundTaskManager.BackgroundMode.DATA_TRANSFER, agent);
+      this.keepAliveRunning = true;
+      LogStore.addLog('[vpn] 扩展长时任务已开启');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : `${e}`;
+      LogStore.addLog(`[vpn] 扩展长时任务开启失败: ${msg}`);
+    }
+  }
+
+  private async stopKeepAlive(): Promise<void> {
+    if (!this.keepAliveRunning) {
+      return;
+    }
+    this.keepAliveRunning = false;
+    try {
+      await backgroundTaskManager.stopBackgroundRunning(this.context);
+      LogStore.addLog('[vpn] 扩展长时任务已释放');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : `${e}`;
+      LogStore.addLog(`[vpn] 扩展长时任务释放失败: ${msg}`);
+    }
+  }
+
+  /** 心跳:只想让 UI 进程知道「扩展还活着」,内容与当前状态一致,不改变 UI 显示 */
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      if (!this.started) {
+        return;
+      }
+      publishVpnStatus(`connected:${this.currentNodeName}`, true, this.currentRunId,
+        this.keepAliveRunning ? 'true' : 'false');
+    }, 5000);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer >= 0) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = -1;
+    }
   }
 
   private startNotificationTrafficPoller(): void {
@@ -738,7 +824,7 @@ export default class VpnExtAbility extends VpnExtensionAbility {
       const latencyText: string = latencyMs >= 0 ? `${latencyMs}ms` : '--';
       const disconnectAgent = await wantAgent.getWantAgent({
         wants: [{
-          bundleName: 'com.nekobox.app.jynxen',
+          bundleName: 'com.paperbox.harmonyos',
           abilityName: 'EntryAbility',
           parameters: { 'action': 'disconnect' }
         }],
@@ -768,6 +854,10 @@ export default class VpnExtAbility extends VpnExtensionAbility {
       const request: notificationManager.NotificationRequest = {
         id: 1001,
         isOngoing: true,
+        /* 归到「内容资讯」槽(CONTENT_INFORMATION = LEVEL_MIN,静默级):
+           状态栏不占图标、不弹横幅,通知栏里落到下面的「更多通知」分组,
+           不要顶在通知列表第一条。断开按钮仍保留,点开分组即可操作。 */
+        notificationSlotType: notificationManager.SlotType.CONTENT_INFORMATION,
         content: content,
         actionButtons: [{
           title: res.getStringSync($r('app.string.notification_disconnect')),

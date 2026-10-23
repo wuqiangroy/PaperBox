@@ -168,7 +168,7 @@ async function doFetchSubscription(url: string, withInfo: boolean, allowInsecure
       method: http.RequestMethod.GET,
       header: headers,
       expectDataType: http.HttpDataType.STRING,
-      usingProtocol: http.HttpProtocol.HTTP1_1,
+      /* 不强制 HTTP/1.1:部分订阅站点只走 HTTP/2,强制 1.1 会被中间层回 "Internal Error" */
       connectTimeout: 15000,
       readTimeout: 30000
     };
@@ -694,24 +694,36 @@ export function looksLikeSingBoxJson(text: string): boolean {
 
 /** 统一订阅链路错误文本(裸对象不再显示 [object Object]) */
 export function subErrorText(e: Object): string {
+  let message: string = '';
   if (e instanceof Error) {
-    return e.message;
-  }
-  if (typeof e === 'object' && e !== null) {
+    message = e.message;
+  } else if (typeof e === 'object' && e !== null) {
     const m = (e as Record<string, Object>)['message'];
     if (m !== undefined && m !== null && `${m}`.length > 0) {
-      return `${m}`;
-    }
-    try {
-      const s = JSON.stringify(e);
-      if (s !== undefined && s !== null && s.length > 0 && s !== '{}') {
-        return s.length > 160 ? s.substring(0, 160) : s;
+      message = `${m}`;
+    } else {
+      try {
+        const s = JSON.stringify(e);
+        if (s !== undefined && s !== null && s.length > 0 && s !== '{}') {
+          message = s.length > 160 ? s.substring(0, 160) : s;
+        }
+      } catch (err) {
+        // ignore
       }
-    } catch (err) {
-      // ignore
     }
   }
-  return `${e}`;
+  if (message.length === 0) {
+    message = `${e}`;
+  }
+  /* 系统 API 抛的 BusinessError 常只有「Internal Error」这类通用文案,
+     光看它无法判断是网络、TLS 还是参数问题 —— 有 code 就一并带出来。 */
+  if (typeof e === 'object' && e !== null) {
+    const code = (e as Record<string, Object>)['code'];
+    if (typeof code === 'number' && message.indexOf(`code=${code}`) < 0) {
+      return `${message} (code=${code})`;
+    }
+  }
+  return message;
 }
 
 function sbStr(o: Record<string, Object>, k: string, dflt: string = ''): string {

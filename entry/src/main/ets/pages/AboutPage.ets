@@ -1,14 +1,14 @@
 import common from '@ohos.app.ability.common';
 import bundleManager from '@ohos.bundle.bundleManager';
-import promptAction from '@ohos.promptAction';
 import http from '@ohos.net.http';
+import promptAction from '@ohos.promptAction';
 import { UiSpec } from '../common/UiSpec';
 import { pressLightEffect } from '../common/Effects';
+import { setClipboardText } from '../utils/ClipboardHelper';
 
 const CORE_VERSION = 'sing-box 1.14.0 (OHOS c-shared)';
-const GITHUB_URL = 'https://github.com/xiaoli8571/NekoBox4Harmony';
-const TELEGRAM_URL = 'https://t.me/+x9D290Stp9NhYWU9';
-const RELEASES_API = 'https://api.github.com/repos/xiaoli8571/NekoBox4Harmony/releases/latest';
+const GITHUB_URL = 'https://github.com/wuqiangroy/NekoBox4Harmony';
+const RELEASES_API = 'https://api.github.com/repos/wuqiangroy/NekoBox4Harmony/releases/latest';
 
 /**
  * 关于页(对齐 NekoBoxForAndroid AboutFragment):
@@ -18,9 +18,12 @@ const RELEASES_API = 'https://api.github.com/repos/xiaoli8571/NekoBox4Harmony/re
 export struct AboutPage {
   @State appVersion: string = '';
   @State checking: boolean = false;
-  /** 当前被按下的元素 key(检查更新 / 项目主页 / Telegram):"按下才亮"靠它逐颗判断 */
+  /** 检查更新结果 / 项目主页地址:都在页内展示,不跳转 */
+  @State hasUpdateMessage: boolean = false;
+  @State updateMessage: ResourceStr = '';
+  @State showGithub: boolean = false;
+  /** 当前被按下的元素 key(检查更新 / 项目主页):"按下才亮"靠它逐颗判断 */
   @State litKey: string = '';
-  onOpenDrawer: () => void = () => {};
   private context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
 
   aboutToAppear(): void {
@@ -32,20 +35,13 @@ export struct AboutPage {
     }
   }
 
-  private openGitHub(): void {
-    this.openLink(GITHUB_URL);
-  }
-
-  private openTelegram(): void {
-    this.openLink(TELEGRAM_URL);
-  }
-
-  private openLink(url: string): void {
+  /** 复制项目主页地址(不跳转,点击后只写系统剪贴板并提示) */
+  async copyGithub(): Promise<void> {
     try {
-      this.context.openLink(url);
+      await setClipboardText(GITHUB_URL);
+      promptAction.showToast({ message: $r('app.string.copy_action'), duration: 1500 });
     } catch (e) {
-      // 无可用处理器时把链接展示给用户手动复制
-      promptAction.showToast({ message: url });
+      promptAction.showToast({ message: `${e}`, duration: 2000 });
     }
   }
 
@@ -62,7 +58,7 @@ export struct AboutPage {
           method: http.RequestMethod.GET,
           connectTimeout: 10000,
           readTimeout: 15000,
-          header: { 'User-Agent': 'NekoBox4Harmony' } as Record<string, string>,
+          header: { 'User-Agent': 'PaperBox' } as Record<string, string>,
           expectDataType: http.HttpDataType.STRING
         });
         if (resp.responseCode === 200) {
@@ -73,19 +69,17 @@ export struct AboutPage {
         client.destroy();
       }
       if (latest.length === 0) {
-        promptAction.showToast({ message: $r('app.string.check_update_failed') });
-        return;
-      }
-      if (this.appVersion.length > 0 && latest === this.appVersion) {
-        promptAction.showToast({ message: $r('app.string.check_update_latest') });
+        this.updateMessage = $r('app.string.check_update_failed');
+      } else if (this.appVersion.length > 0 && latest === this.appVersion) {
+        this.updateMessage = $r('app.string.check_update_latest');
       } else {
-        promptAction.showToast({ message: $r('app.string.check_update_new', latest) });
-        this.openGitHub();
+        this.updateMessage = $r('app.string.check_update_new', latest);
       }
     } catch (e) {
-      promptAction.showToast({ message: $r('app.string.check_update_failed') });
+      this.updateMessage = $r('app.string.check_update_failed');
     } finally {
       this.checking = false;
+      this.hasUpdateMessage = true;
     }
   }
 
@@ -104,8 +98,8 @@ export struct AboutPage {
               Button(this.checking ? $r('app.string.checking_update') : $r('app.string.check_update'))
                 .layoutWeight(1)
                 .height(UiSpec.BTN_HEIGHT)
-                .backgroundColor($r('app.color.primary'))
-                .fontColor($r('app.color.surface'))
+                .backgroundColor($r('app.color.surface_selected'))
+                .fontColor($r('app.color.primary'))
                 /* 卡片在 Scroll 里(会跟滚动跑位)⇒ 只"按下才亮",不挂常亮光源、不加 scale */
                 .visualEffect(pressLightEffect(this.litKey === 'about:check', true))
                 .onTouch((event: TouchEvent) => {
@@ -119,8 +113,8 @@ export struct AboutPage {
               Button($r('app.string.about_github'))
                 .layoutWeight(1)
                 .height(UiSpec.BTN_HEIGHT)
-                .backgroundColor($r('app.color.surface'))
-                .fontColor($r('app.color.text_primary'))
+                .backgroundColor($r('app.color.surface_selected'))
+                .fontColor($r('app.color.text_1'))
                 .visualEffect(pressLightEffect(this.litKey === 'about:github', true))
                 .onTouch((event: TouchEvent) => {
                   if (event.type === TouchType.Down) {
@@ -129,22 +123,48 @@ export struct AboutPage {
         this.litKey = '';
       }
                 })
-                .onClick(() => this.openGitHub())
-              Button($r('app.string.about_telegram'))
-                .layoutWeight(1)
-                .height(UiSpec.BTN_HEIGHT)
-                .backgroundColor($r('app.color.surface'))
-                .fontColor($r('app.color.text_primary'))
-                .visualEffect(pressLightEffect(this.litKey === 'about:telegram', true))
-                .onTouch((event: TouchEvent) => {
-                  if (event.type === TouchType.Down) {
-        this.litKey = 'about:telegram';
-      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-        this.litKey = '';
-      }
+                .onClick(() => {
+                  this.showGithub = !this.showGithub;
                 })
-                .onClick(() => this.openTelegram())
             }.width('100%')
+
+            /* 检查更新结果 / 项目主页地址就地展示 */
+            if (this.hasUpdateMessage) {
+              Text(this.updateMessage)
+                .fontSize(12.5)
+                .fontColor($r('app.color.text_2'))
+                .width('100%')
+            }
+            if (this.showGithub) {
+              Row({ space: 8 }) {
+                Text(GITHUB_URL)
+                  .fontSize(12.5)
+                  .fontColor($r('app.color.mono'))
+                  .copyOption(CopyOptions.LocalDevice)
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .layoutWeight(1)
+                Text($r('app.string.copy_action'))
+                  .fontSize(12.5)
+                  .fontWeight(600)
+                  .fontColor($r('app.color.primary'))
+                  .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+                  .borderRadius(8)
+                  .backgroundColor($r('app.color.surface_selected'))
+                  .visualEffect(pressLightEffect(this.litKey === 'about:copy', false))
+                  .onTouch((event: TouchEvent) => {
+                    if (event.type === TouchType.Down) {
+                      this.litKey = 'about:copy';
+                    } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+                      this.litKey = '';
+                    }
+                  })
+                  .onClick(() => {
+                    this.copyGithub();
+                  })
+              }
+              .width('100%')
+            }
           }
           .alignItems(HorizontalAlign.Start)
           .width('100%')

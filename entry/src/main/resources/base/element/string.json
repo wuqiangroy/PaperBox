@@ -2,7 +2,7 @@
   "string": [
     {
       "name": "app_name",
-      "value": "NekoBox"
+      "value": "PaperBox"
     },
     {
       "name": "permission_read_pasteboard_reason",
@@ -10,7 +10,7 @@
     },
     {
       "name": "brand_name",
-      "value": "NEKOBOX"
+      "value": "PAPERBOX"
     },
     {
       "name": "subscription_management",
@@ -1749,6 +1749,70 @@
       "value": "配置"
     },
     {
+      "name": "tab_proxy",
+      "value": "代理"
+    },
+    {
+      "name": "tab_subscriptions",
+      "value": "订阅"
+    },
+    {
+      "name": "tab_settings",
+      "value": "设置"
+    },
+    {
+      "name": "add_subscription",
+      "value": "新增订阅"
+    },
+    {
+      "name": "settings_hub_general",
+      "value": "常规设置"
+    },
+    {
+      "name": "settings_hub_general_desc",
+      "value": "连接、网络、DNS、外观等选项"
+    },
+    {
+      "name": "settings_hub_groups",
+      "value": "分组管理"
+    },
+    {
+      "name": "settings_hub_groups_desc",
+      "value": "订阅分组与手动分组"
+    },
+    {
+      "name": "settings_hub_route",
+      "value": "路由规则"
+    },
+    {
+      "name": "settings_hub_route_desc",
+      "value": "分流规则与远程规则集"
+    },
+    {
+      "name": "settings_hub_logs",
+      "value": "日志"
+    },
+    {
+      "name": "settings_hub_logs_desc",
+      "value": "查看内核与应用运行日志"
+    },
+    {
+      "name": "settings_hub_tools",
+      "value": "工具"
+    },
+    {
+      "name": "settings_hub_tools_desc",
+      "value": "网络诊断与实用工具"
+    },
+    {
+      "name": "settings_hub_about",
+      "value": "关于"
+    },
+    {
+      "name": "settings_hub_about_desc",
+      "value": "版本信息与项目主页"
+    },
+    {
       "name": "nav_groups",
       "value": "分组"
     },
@@ -1774,7 +1838,7 @@
     },
     {
       "name": "drawer_footer",
-      "value": "NekoBox for Harmony"
+      "value": "PaperBox"
     },
     {
       "name": "test_current_group",
@@ -2037,6 +2101,10 @@
       "value": "项目主页"
     },
     {
+      "name": "copy_action",
+      "value": "复制"
+    },
+    {
       "name": "about_telegram",
       "value": "加入交流群"
     },
@@ -2066,7 +2134,7 @@
     },
     {
       "name": "about_license_body",
-      "value": "sing-box 为 GPL-3.0;应用图标来自 NekoBoxForAndroid(GPL-3.0)。"
+      "value": "sing-box 为 GPL-3.0;本应用为基于 sing-box 的独立客户端。"
     },
     {
       "name": "settings_general",
@@ -2407,6 +2475,30 @@
     {
       "name": "more_actions",
       "value": "更多操作"
+    },
+    {
+      "name": "home_current_node",
+      "value": "当前节点"
+    },
+    {
+      "name": "home_no_node",
+      "value": "未选择节点"
+    },
+    {
+      "name": "home_memory_usage",
+      "value": "内存占用 %1$d MB"
+    },
+    {
+      "name": "home_memory_label",
+      "value": "内存占用"
+    },
+    {
+      "name": "home_local_section",
+      "value": "本地 / 未分组"
+    },
+    {
+      "name": "sub_url_count",
+      "value": "共 %1$d 个订阅"
     }
   ]
 }

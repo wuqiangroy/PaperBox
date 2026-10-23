@@ -16,7 +16,7 @@
         "name": "EntryAbility",
         "srcEntry": "./ets/entryability/EntryAbility.ets",
         "description": "$string:module_desc",
-        "icon": "$media:layered_image",
+        "icon": "$media:icon",
         "label": "$string:app_name",
         "startWindowIcon": "$media:icon",
         "startWindowBackground": "$color:start_window_background",
@@ -38,6 +38,10 @@
         // 本 SDK(HarmonyOS 6.1)合法值为 "vpn";旧文档中的 "vpnExtension" 已不适用
         "type": "vpn",
         "exported": false
+        // ⚠️ 这里不能写 "backgroundModes":本 SDK 的 module.json5 schema 不给
+        // extensionAbilities 这个字段(PreBuild 直接报 00303038)。扩展进程的
+        // 长时任务改为运行时调用 backgroundTaskManager(见 VpnExtAbility.startKeepAlive),
+        // 申请不下来时由 UI 进程那份兜底(心跳里会回报 keepAlive)。
       }
     ],
     "requestPermissions": [

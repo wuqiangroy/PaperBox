@@ -6,14 +6,14 @@ import BusinessError from '@ohos.base';
  * 与 UI 进程之间通过 CommonEvent 传递日志和 VPN 状态。
  */
 
-export const VPN_EVENT_LOG: string = 'com.nekobox.app.jynxen.VPN_LOG';
-export const VPN_EVENT_STATUS: string = 'com.nekobox.app.jynxen.VPN_STATUS';
-export const VPN_EVENT_LATENCY: string = 'com.nekobox.app.jynxen.VPN_LATENCY';
-export const VPN_EVENT_TRAFFIC: string = 'com.nekobox.app.jynxen.VPN_TRAFFIC';
+export const VPN_EVENT_LOG: string = 'com.paperbox.harmonyos.VPN_LOG';
+export const VPN_EVENT_STATUS: string = 'com.paperbox.harmonyos.VPN_STATUS';
+export const VPN_EVENT_LATENCY: string = 'com.paperbox.harmonyos.VPN_LATENCY';
+export const VPN_EVENT_TRAFFIC: string = 'com.paperbox.harmonyos.VPN_TRAFFIC';
 /** UI 进程 → 扩展进程:应用回到前台,唤醒后重置连接(对齐安卓 wakeResetConnections) */
-export const VPN_EVENT_APP_FOREGROUND: string = 'com.nekobox.app.jynxen.VPN_APP_FOREGROUND';
+export const VPN_EVENT_APP_FOREGROUND: string = 'com.paperbox.harmonyos.VPN_APP_FOREGROUND';
 
-const APP_BUNDLE = 'com.nekobox.app.jynxen';
+const APP_BUNDLE = 'com.paperbox.harmonyos';
 
 /** 扩展进程调用:把一行日志发到 UI 进程 */
 export function publishVpnLog(line: string): void {
@@ -27,14 +27,22 @@ export function publishVpnLog(line: string): void {
   }
 }
 
-/** 扩展进程调用:状态变更通知 UI(profileId 便于 UI 判断当前节点) */
-export function publishVpnStatus(status: string, running: boolean, profileId: string = ''): void {
+/**
+ * 扩展进程调用:状态变更通知 UI(profileId 便于 UI 判断当前节点)。
+ * keepAlive:'true'/'false' = 扩展进程是否已自己拿到长时任务(空串 = 本次不带该信息,
+ * UI 不改动自己那份兜底任务)。心跳里会持续回报,UI 据此决定要不要兜底。
+ */
+export function publishVpnStatus(status: string, running: boolean, profileId: string = '',
+  keepAlive: string = ''): void {
   try {
     const payload: Record<string, string> = {
       'status': status,
       'running': running ? 'true' : 'false',
       'profileId': profileId
     };
+    if (keepAlive.length > 0) {
+      payload['keepAlive'] = keepAlive;
+    }
     const opts: commonEventManager.CommonEventPublishData = {
       bundleName: APP_BUNDLE,
       data: JSON.stringify(payload)
@@ -105,7 +113,7 @@ let subscriptionGeneration: number = 0;
 
 /** UI 进程调用:订阅扩展发来的日志、状态与流量 */
 export function subscribeVpnEvents(onLog: (line: string) => void,
-  onStatus: (status: string, running: boolean, profileId: string) => void,
+  onStatus: (status: string, running: boolean, profileId: string, keepAlive: string) => void,
   onTraffic: (upSpeed: number, downSpeed: number, totalUp: number, totalDown: number) => void): void {
   const generation = ++subscriptionGeneration;
   const info: commonEventManager.CommonEventSubscribeInfo = {
@@ -128,7 +136,8 @@ export function subscribeVpnEvents(onLog: (line: string) => void,
           const status: string = obj['status'] === undefined ? '' : `${obj['status']}`;
           const running: boolean = `${obj['running']}` === 'true';
           const profileId: string = obj['profileId'] === undefined ? '' : `${obj['profileId']}`;
-          onStatus(status, running, profileId);
+          const keepAlive: string = obj['keepAlive'] === undefined ? '' : `${obj['keepAlive']}`;
+          onStatus(status, running, profileId, keepAlive);
         } catch (e) {
           // 忽略格式错误的状态
         }

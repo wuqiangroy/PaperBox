@@ -35,7 +35,8 @@ export struct GroupPage {
   @State litKey: string = '';
   private context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
   onDataChanged: () => void = () => {};
-  onOpenDrawer: () => void = () => {};
+  /** 新增订阅入口(复用壳层的导入流程) */
+  onAddSubscription: () => void = () => {};
 
   aboutToAppear(): void {
     this.refresh();
@@ -407,8 +408,22 @@ export struct GroupPage {
 
   build() {
     Column() {
-      /* 标题与抽屉入口都在壳层的 HDS 顶栏里;这里只保留本页自己的动作(更新全部订阅) */
-      Row() {
+      /* 标题在壳层 HDS 顶栏里;这里放本页动作:新增订阅(复用导入流程)+ 更新全部 */
+      Row({ space: 8 }) {
+        Button($r('app.string.add_subscription'))
+          .height(34)
+          .backgroundColor($r('app.color.primary'))
+          .fontColor($r('app.color.surface'))
+          .visualEffect(pressLightEffect(this.litKey === 'group:addsub', true))
+          .scale({ x: this.litKey === 'group:addsub' ? 0.96 : 1.0, y: this.litKey === 'group:addsub' ? 0.96 : 1.0 })
+          .onTouch((event: TouchEvent) => {
+            if (event.type === TouchType.Down) {
+              this.litKey = 'group:addsub';
+            } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+              this.litKey = '';
+            }
+          })
+          .onClick(() => this.onAddSubscription())
         Blank()
           .layoutWeight(1)
         Text(this.updatingAll ? $r('app.string.updating') : $r('app.string.update_all_subs'))

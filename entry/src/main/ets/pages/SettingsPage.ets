@@ -69,7 +69,6 @@ export struct SettingsPage {
   @State litKey: string = '';
   private context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
   onSettingsChanged: (settings: AppSettings) => void = (_settings: AppSettings) => {};
-  onOpenDrawer: () => void = () => {};
 
   aboutToAppear(): void {
     this.load();
@@ -396,13 +395,13 @@ export struct SettingsPage {
         .fontColor([$r('app.color.mono')])
         .width(24)
       Text(title)
-        .fontSize(12)
+        .fontSize(13.5)
         .fontWeight(700)
-        .fontColor($r('app.color.text_3'))
-        .letterSpacing(2)
+        .fontColor($r('app.color.text_1'))
+        .letterSpacing(1)
         .layoutWeight(1)
       SymbolGlyph(expanded ? $r('sys.symbol.chevron_up') : $r('sys.symbol.chevron_down'))
-        .fontSize(14)
+        .fontSize(15)
         .fontColor([$r('app.color.text_3')])
     }
     .width('100%')
@@ -493,8 +492,8 @@ export struct SettingsPage {
           Column({ space: 8 }) {
             Row() {
               Column() {
-                Text($r('app.string.settings_auto_connect')).fontSize(14)
-                Text($r('app.string.settings_auto_connect_desc')).fontSize(11).fontColor($r('app.color.text_secondary'))
+                Text($r('app.string.settings_auto_connect')).fontSize(15).fontColor($r('app.color.text_1'))
+                Text($r('app.string.settings_auto_connect_desc')).fontSize(12).fontColor($r('app.color.text_secondary'))
               }.alignItems(HorizontalAlign.Start).layoutWeight(1)
               Toggle({ type: ToggleType.Switch, isOn: this.s.autoConnect })
                 .onChange((v: boolean) => {
@@ -504,7 +503,7 @@ export struct SettingsPage {
             }.width('100%')
 
             Column() {
-              Text($r('app.string.settings_log_level')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+              Text($r('app.string.settings_log_level')).fontSize(14).fontColor($r('app.color.text_1')).width('100%')
               Select(LOG_LEVELS.map((t: string) => ({ value: t } as SelectOption)))
                 .selected(LOG_LEVELS.indexOf(this.s.logLevel) < 0 ? 2 : LOG_LEVELS.indexOf(this.s.logLevel))
                 .value(this.s.logLevel)
@@ -515,7 +514,7 @@ export struct SettingsPage {
             }.alignItems(HorizontalAlign.Start).width('100%')
 
             Column() {
-              Text($r('app.string.latency_test_mode')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+              Text($r('app.string.latency_test_mode')).fontSize(14).fontColor($r('app.color.text_1')).width('100%')
               Select(LATENCY_TEST_LABELS.map((t: Resource, i: number) => ({ value: t } as SelectOption)))
                 .selected(LATENCY_TEST_VALUES.indexOf(this.s.latencyTestMode) < 0 ? 0 : LATENCY_TEST_VALUES.indexOf(this.s.latencyTestMode))
                 .value(LATENCY_TEST_LABELS[LATENCY_TEST_VALUES.indexOf(this.s.latencyTestMode) < 0 ? 0 : LATENCY_TEST_VALUES.indexOf(this.s.latencyTestMode)])
@@ -524,11 +523,11 @@ export struct SettingsPage {
                   this.markDirty();
                 })
               Text($r('app.string.latency_test_mode_desc'))
-                .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+                .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
             }.alignItems(HorizontalAlign.Start).width('100%')
 
             Column() {
-              Text($r('app.string.settings_test_url')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+              Text($r('app.string.settings_test_url')).fontSize(14).fontColor($r('app.color.text_1')).width('100%')
               TextInput({ text: this.s.testUrl })
                 .width('100%').height(40)
                 .onChange((v: string) => {
@@ -536,11 +535,11 @@ export struct SettingsPage {
                   this.markDirty();
                 })
               Text($r('app.string.settings_test_url_desc'))
-                .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+                .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
             }.alignItems(HorizontalAlign.Start).width('100%')
 
             Column() {
-              Text($r('app.string.settings_test_concurrent')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+              Text($r('app.string.settings_test_concurrent')).fontSize(14).fontColor($r('app.color.text_1')).width('100%')
               TextInput({ text: `${this.s.testConcurrent}` })
                 .type(InputType.Number).width('100%').height(40)
                 .onChange((v: string) => {
@@ -551,7 +550,7 @@ export struct SettingsPage {
             }.alignItems(HorizontalAlign.Start).width('100%')
 
             Column() {
-              Text($r('app.string.settings_global_custom_config')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+              Text($r('app.string.settings_global_custom_config')).fontSize(14).fontColor($r('app.color.text_1')).width('100%')
               TextArea({ text: this.s.globalCustomConfig, placeholder: '{"log":{"level":"info"}}' })
                 .height(90)
                 .fontSize(12)
@@ -562,11 +561,11 @@ export struct SettingsPage {
                   this.markDirty();
                 })
               Text($r('app.string.settings_global_custom_config_desc'))
-                .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+                .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
             }.alignItems(HorizontalAlign.Start).width('100%')
 
             Row() {
-              Text($r('app.string.settings_always_show_address')).fontSize(14).layoutWeight(1)
+              Text($r('app.string.settings_always_show_address')).fontSize(15).fontColor($r('app.color.text_1')).layoutWeight(1)
               Toggle({ type: ToggleType.Switch, isOn: this.s.alwaysShowAddress })
                 .onChange((v: boolean) => {
                   this.s.alwaysShowAddress = v;
@@ -575,7 +574,7 @@ export struct SettingsPage {
             }.width('100%')
 
             Row() {
-              Text($r('app.string.show_bottom_bar')).fontSize(14).layoutWeight(1)
+              Text($r('app.string.show_bottom_bar')).fontSize(15).fontColor($r('app.color.text_1')).layoutWeight(1)
               Toggle({ type: ToggleType.Switch, isOn: this.s.showBottomBar })
                 .onChange((v: boolean) => {
                   this.s.showBottomBar = v;
@@ -584,7 +583,7 @@ export struct SettingsPage {
             }.width('100%')
 
             Row() {
-              Text($r('app.string.settings_notification_group')).fontSize(14).layoutWeight(1)
+              Text($r('app.string.settings_notification_group')).fontSize(15).fontColor($r('app.color.text_1')).layoutWeight(1)
               Toggle({ type: ToggleType.Switch, isOn: this.s.notificationGroup })
                 .onChange((v: boolean) => {
                   this.s.notificationGroup = v;
@@ -594,9 +593,9 @@ export struct SettingsPage {
 
             Row() {
               Column({ space: 2 }) {
-                Text($r('app.string.settings_speed_interval')).fontSize(14).width('100%')
+                Text($r('app.string.settings_speed_interval')).fontSize(15).fontColor($r('app.color.text_1')).width('100%')
                 Text($r('app.string.settings_speed_interval_sum'))
-                  .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+                  .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
               }.alignItems(HorizontalAlign.Start).layoutWeight(1)
               TextInput({ text: `${this.s.speedIntervalMs}`, placeholder: '1000' })
                 .type(InputType.Number).width(110).height(36)
@@ -609,8 +608,8 @@ export struct SettingsPage {
 
             Row() {
               Column() {
-                Text($r('app.string.settings_insecure_tls')).fontSize(14)
-                Text($r('app.string.settings_insecure_tls_desc')).fontSize(11).fontColor($r('app.color.text_secondary'))
+                Text($r('app.string.settings_insecure_tls')).fontSize(15).fontColor($r('app.color.text_1'))
+                Text($r('app.string.settings_insecure_tls_desc')).fontSize(12).fontColor($r('app.color.text_secondary'))
               }.alignItems(HorizontalAlign.Start).layoutWeight(1)
               Toggle({ type: ToggleType.Switch, isOn: this.s.allowInsecureAll })
                 .onChange((v: boolean) => {
@@ -621,8 +620,8 @@ export struct SettingsPage {
 
             Row() {
               Column() {
-                Text($r('app.string.settings_sub_allow_insecure')).fontSize(14)
-                Text($r('app.string.settings_sub_allow_insecure_desc')).fontSize(11).fontColor($r('app.color.text_secondary'))
+                Text($r('app.string.settings_sub_allow_insecure')).fontSize(15).fontColor($r('app.color.text_1'))
+                Text($r('app.string.settings_sub_allow_insecure_desc')).fontSize(12).fontColor($r('app.color.text_secondary'))
               }.alignItems(HorizontalAlign.Start).layoutWeight(1)
               Toggle({ type: ToggleType.Switch, isOn: this.s.subAllowInsecure })
                 .onChange((v: boolean) => {
@@ -641,14 +640,14 @@ export struct SettingsPage {
           if (this.networkExpanded) {
           if (this.s.mode === 'rule') {
             Column() {
-              Text($r('app.string.settings_direct_domain_suffix')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+              Text($r('app.string.settings_direct_domain_suffix')).fontSize(14).fontColor($r('app.color.text_1')).width('100%')
               TextInput({ text: this.s.directDomains, placeholder: 'baidu.com,qq.com,163.com' })
                 .width('100%').height(40)
                 .onChange((v: string) => {
                   this.s.directDomains = v;
                   this.markDirty();
                 })
-              Text($r('app.string.settings_direct_cidr')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+              Text($r('app.string.settings_direct_cidr')).fontSize(14).fontColor($r('app.color.text_1')).width('100%')
                 .margin({ top: 6 })
               TextInput({ text: this.s.directIpCidrs, placeholder: '114.114.114.114/32' })
                 .width('100%').height(40)
@@ -675,7 +674,7 @@ export struct SettingsPage {
               }.width('100%').margin({ top: 6 })
               Row({ space: 8 }) {
                 Text($r('app.string.settings_geo_import_hint'))
-                  .fontSize(11).fontColor($r('app.color.text_secondary')).layoutWeight(1)
+                  .fontSize(12).fontColor($r('app.color.text_secondary')).layoutWeight(1)
                 Button($r('app.string.settings_geo_import'))
                   .height(30)
                   .backgroundColor($r('app.color.surface'))
@@ -700,7 +699,7 @@ export struct SettingsPage {
                   Text(info.size > 0
                     ? $r('app.string.geo_asset_status', formatBytes(info.size), info.version)
                     : $r('app.string.geo_asset_absent'))
-                    .fontSize(11).fontColor($r('app.color.text_secondary')).layoutWeight(1)
+                    .fontSize(12).fontColor($r('app.color.text_secondary')).layoutWeight(1)
                   Button(this.geoLoading ? $r('app.string.settings_geo_downloading') : $r('app.string.settings_geo_update_one'))
                     .height(28)
                     .fontSize(12)
@@ -740,7 +739,7 @@ export struct SettingsPage {
           Blank().height(2)
 
           Column() {
-            Text($r('app.string.settings_tun_mtu')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+            Text($r('app.string.settings_tun_mtu')).fontSize(14).fontColor($r('app.color.text_1')).width('100%')
             TextInput({ text: `${this.s.mtu}`, placeholder: '9000' })
               .type(InputType.Number).width('100%').height(40)
               .onChange((v: string) => {
@@ -751,7 +750,7 @@ export struct SettingsPage {
           }.alignItems(HorizontalAlign.Start).width('100%')
 
           Column() {
-            Text($r('app.string.settings_tun_stack')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+            Text($r('app.string.settings_tun_stack')).fontSize(14).fontColor($r('app.color.text_1')).width('100%')
             Select(STACKS.map((t: string) => ({ value: t } as SelectOption)))
               .selected(STACKS.indexOf(this.s.stack) < 0 ? 0 : STACKS.indexOf(this.s.stack))
               .value(this.s.stack)
@@ -762,7 +761,7 @@ export struct SettingsPage {
           }.alignItems(HorizontalAlign.Start).width('100%')
 
           Column() {
-            Text($r('app.string.settings_enable_ipv6')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+            Text($r('app.string.settings_enable_ipv6')).fontSize(14).fontColor($r('app.color.text_1')).width('100%')
             Select(IPV6_MODES.map((t: string, i: number) => ({ value: IPV6_MODE_LABELS[i] } as SelectOption)))
               .selected(IPV6_MODES.indexOf(this.s.ipv6Mode) < 0 ? (this.s.ipv6 ? 1 : 0) : IPV6_MODES.indexOf(this.s.ipv6Mode))
               .value(IPV6_MODE_LABELS[(IPV6_MODES.indexOf(this.s.ipv6Mode) < 0 ? (this.s.ipv6 ? 1 : 0) : IPV6_MODES.indexOf(this.s.ipv6Mode))])
@@ -774,8 +773,8 @@ export struct SettingsPage {
 
           Row() {
             Column() {
-              Text($r('app.string.settings_bypass_lan')).fontSize(14)
-              Text($r('app.string.settings_bypass_lan_desc')).fontSize(11).fontColor($r('app.color.text_secondary'))
+              Text($r('app.string.settings_bypass_lan')).fontSize(15).fontColor($r('app.color.text_1'))
+              Text($r('app.string.settings_bypass_lan_desc')).fontSize(12).fontColor($r('app.color.text_secondary'))
             }.alignItems(HorizontalAlign.Start).layoutWeight(1)
             Toggle({ type: ToggleType.Switch, isOn: this.s.bypassLan })
               .onChange((v: boolean) => {
@@ -785,7 +784,7 @@ export struct SettingsPage {
           }.width('100%')
 
           Column() {
-            Text($r('app.string.settings_sniff')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+            Text($r('app.string.settings_sniff')).fontSize(14).fontColor($r('app.color.text_1')).width('100%')
             Row({ space: 8 }) {
               ForEach(SNIFF_MODES, (m: string, idx: number) => {
                 Button(SNIFF_LABELS[idx])
@@ -811,8 +810,8 @@ export struct SettingsPage {
 
           Row() {
             Column() {
-              Text($r('app.string.settings_resolve_destination')).fontSize(14)
-              Text($r('app.string.settings_resolve_destination_desc')).fontSize(11).fontColor($r('app.color.text_secondary'))
+              Text($r('app.string.settings_resolve_destination')).fontSize(15).fontColor($r('app.color.text_1'))
+              Text($r('app.string.settings_resolve_destination_desc')).fontSize(12).fontColor($r('app.color.text_secondary'))
             }.alignItems(HorizontalAlign.Start).layoutWeight(1)
             Toggle({ type: ToggleType.Switch, isOn: this.s.resolveDestination })
               .onChange((v: boolean) => {
@@ -830,7 +829,7 @@ export struct SettingsPage {
           if (this.dnsExpanded) {
           Column({ space: 8 }) {
             Column() {
-              Text($r('app.string.settings_remote_dns')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+              Text($r('app.string.settings_remote_dns')).fontSize(14).fontColor($r('app.color.text_1')).width('100%')
               TextInput({ text: this.s.remoteDns })
                 .width('100%').height(40)
                 .onChange((v: string) => {
@@ -838,11 +837,11 @@ export struct SettingsPage {
                   this.markDirty();
                 })
               Text($r('app.string.settings_remote_dns_hint'))
-                .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+                .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
             }.alignItems(HorizontalAlign.Start).width('100%')
 
             Column() {
-              Text($r('app.string.settings_remote_dns_strategy')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+              Text($r('app.string.settings_remote_dns_strategy')).fontSize(14).fontColor($r('app.color.text_1')).width('100%')
               Select(STRATEGIES.map((t: string, i: number) => ({ value: STRATEGY_LABELS[i] } as SelectOption)))
                 .selected(STRATEGIES.indexOf(this.s.remoteDnsStrategy) < 0 ? 0 : STRATEGIES.indexOf(this.s.remoteDnsStrategy))
                 .value(STRATEGY_LABELS[STRATEGIES.indexOf(this.s.remoteDnsStrategy) < 0 ? 0 : STRATEGIES.indexOf(this.s.remoteDnsStrategy)])
@@ -853,7 +852,7 @@ export struct SettingsPage {
             }.alignItems(HorizontalAlign.Start).width('100%')
 
             Column() {
-              Text($r('app.string.settings_direct_dns')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+              Text($r('app.string.settings_direct_dns')).fontSize(14).fontColor($r('app.color.text_1')).width('100%')
               TextInput({ text: this.s.directDns })
                 .width('100%').height(40)
                 .onChange((v: string) => {
@@ -863,7 +862,7 @@ export struct SettingsPage {
             }.alignItems(HorizontalAlign.Start).width('100%')
 
             Column() {
-              Text($r('app.string.settings_direct_dns_strategy')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+              Text($r('app.string.settings_direct_dns_strategy')).fontSize(14).fontColor($r('app.color.text_1')).width('100%')
               Select(STRATEGIES.map((t: string, i: number) => ({ value: STRATEGY_LABELS[i] } as SelectOption)))
                 .selected(STRATEGIES.indexOf(this.s.directDnsStrategy) < 0 ? 0 : STRATEGIES.indexOf(this.s.directDnsStrategy))
                 .value(STRATEGY_LABELS[STRATEGIES.indexOf(this.s.directDnsStrategy) < 0 ? 0 : STRATEGIES.indexOf(this.s.directDnsStrategy)])
@@ -874,7 +873,7 @@ export struct SettingsPage {
             }.alignItems(HorizontalAlign.Start).width('100%')
 
             Column() {
-              Text($r('app.string.settings_server_dns_strategy')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+              Text($r('app.string.settings_server_dns_strategy')).fontSize(14).fontColor($r('app.color.text_1')).width('100%')
               Select(STRATEGIES.map((t: string, i: number) => ({ value: STRATEGY_LABELS[i] } as SelectOption)))
                 .selected(STRATEGIES.indexOf(this.s.serverDnsStrategy) < 0 ? 0 : STRATEGIES.indexOf(this.s.serverDnsStrategy))
                 .value(STRATEGY_LABELS[STRATEGIES.indexOf(this.s.serverDnsStrategy) < 0 ? 0 : STRATEGIES.indexOf(this.s.serverDnsStrategy)])
@@ -883,13 +882,13 @@ export struct SettingsPage {
                   this.markDirty();
                 })
               Text($r('app.string.settings_server_dns_strategy_hint'))
-                .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+                .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
             }.alignItems(HorizontalAlign.Start).width('100%')
 
             Row() {
               Column() {
-                Text($r('app.string.settings_dns_routing')).fontSize(14)
-                Text($r('app.string.settings_dns_routing_desc')).fontSize(11).fontColor($r('app.color.text_secondary'))
+                Text($r('app.string.settings_dns_routing')).fontSize(15).fontColor($r('app.color.text_1'))
+                Text($r('app.string.settings_dns_routing_desc')).fontSize(12).fontColor($r('app.color.text_secondary'))
               }.alignItems(HorizontalAlign.Start).layoutWeight(1)
               Toggle({ type: ToggleType.Switch, isOn: this.s.dnsRouting })
                 .onChange((v: boolean) => {
@@ -900,8 +899,8 @@ export struct SettingsPage {
 
             Row() {
               Column() {
-                Text($r('app.string.settings_fakedns')).fontSize(14)
-                Text($r('app.string.settings_fakedns_desc')).fontSize(11).fontColor($r('app.color.text_secondary'))
+                Text($r('app.string.settings_fakedns')).fontSize(15).fontColor($r('app.color.text_1'))
+                Text($r('app.string.settings_fakedns_desc')).fontSize(12).fontColor($r('app.color.text_secondary'))
               }.alignItems(HorizontalAlign.Start).layoutWeight(1)
               Toggle({ type: ToggleType.Switch, isOn: this.s.fakeDns })
                 .onChange((v: boolean) => {
@@ -920,7 +919,7 @@ export struct SettingsPage {
           if (this.inboundExpanded) {
           Column({ space: 8 }) {
             Column() {
-              Text($r('app.string.settings_mixed_port')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+              Text($r('app.string.settings_mixed_port')).fontSize(14).fontColor($r('app.color.text_1')).width('100%')
               TextInput({ text: `${this.s.mixedPort > 0 ? this.s.mixedPort : ''}`, placeholder: $r('app.string.settings_mixed_port_hint') })
                 .type(InputType.Number).width('100%').height(40)
                 .onChange((v: string) => {
@@ -932,8 +931,8 @@ export struct SettingsPage {
 
             Row() {
               Column() {
-                Text($r('app.string.settings_allow_access')).fontSize(14)
-                Text($r('app.string.settings_allow_access_desc')).fontSize(11).fontColor($r('app.color.text_secondary'))
+                Text($r('app.string.settings_allow_access')).fontSize(15).fontColor($r('app.color.text_1'))
+                Text($r('app.string.settings_allow_access_desc')).fontSize(12).fontColor($r('app.color.text_secondary'))
               }.alignItems(HorizontalAlign.Start).layoutWeight(1)
               Toggle({ type: ToggleType.Switch, isOn: this.s.allowAccess })
                 .onChange((v: boolean) => {
@@ -974,7 +973,7 @@ export struct SettingsPage {
                   })
               }, (mode: string) => mode)
             }.width('100%')
-            Text($r('app.string.profile_sort_mode')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+            Text($r('app.string.profile_sort_mode')).fontSize(14).fontColor($r('app.color.text_1')).width('100%')
             Row({ space: 8 }) {
               ForEach(['manual', 'latency', 'name'], (mode: string) => {
                 Button(mode === 'manual' ? $r('app.string.sort_manual') : (mode === 'latency' ? $r('app.string.sort_latency') : $r('app.string.sort_name')))
@@ -996,7 +995,7 @@ export struct SettingsPage {
               }, (mode: string) => mode)
             }.width('100%')
             Row() {
-              Text($r('app.string.haptic_feedback')).fontSize(14).layoutWeight(1)
+              Text($r('app.string.haptic_feedback')).fontSize(15).fontColor($r('app.color.text_1')).layoutWeight(1)
               Toggle({ type: ToggleType.Switch, isOn: this.s.hapticFeedback })
                 .onChange((v: boolean) => {
                   this.s.hapticFeedback = v;
@@ -1004,7 +1003,7 @@ export struct SettingsPage {
                 })
             }.width('100%')
             Row() {
-              Text($r('app.string.liquid_glass')).fontSize(14).layoutWeight(1)
+              Text($r('app.string.liquid_glass')).fontSize(15).fontColor($r('app.color.text_1')).layoutWeight(1)
               Toggle({ type: ToggleType.Switch, isOn: this.s.liquidGlass })
                 .onChange((v: boolean) => {
                   this.s.liquidGlass = v;
@@ -1013,9 +1012,9 @@ export struct SettingsPage {
             }.width('100%')
             Row() {
               Column({ space: 2 }) {
-                Text($r('app.string.network_change_reset_connections')).fontSize(14).width('100%')
+                Text($r('app.string.network_change_reset_connections')).fontSize(15).fontColor($r('app.color.text_1')).width('100%')
                 Text($r('app.string.network_change_reset_connections_sum'))
-                  .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+                  .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
               }.alignItems(HorizontalAlign.Start).layoutWeight(1)
               Toggle({ type: ToggleType.Switch, isOn: this.s.networkChangeResetConnections })
                 .onChange((v: boolean) => {
@@ -1025,9 +1024,9 @@ export struct SettingsPage {
             }.width('100%')
             Row() {
               Column({ space: 2 }) {
-                Text($r('app.string.wake_reset_connections')).fontSize(14).width('100%')
+                Text($r('app.string.wake_reset_connections')).fontSize(15).fontColor($r('app.color.text_1')).width('100%')
                 Text($r('app.string.wake_reset_connections_sum'))
-                  .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+                  .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
               }.alignItems(HorizontalAlign.Start).layoutWeight(1)
               Toggle({ type: ToggleType.Switch, isOn: this.s.wakeResetConnections })
                 .onChange((v: boolean) => {
@@ -1037,9 +1036,9 @@ export struct SettingsPage {
             }.width('100%')
             Row() {
               Column({ space: 2 }) {
-                Text($r('app.string.profile_traffic_statistics')).fontSize(14).width('100%')
+                Text($r('app.string.profile_traffic_statistics')).fontSize(15).fontColor($r('app.color.text_1')).width('100%')
                 Text($r('app.string.profile_traffic_statistics_sum'))
-                  .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+                  .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
               }.alignItems(HorizontalAlign.Start).layoutWeight(1)
               Toggle({ type: ToggleType.Switch, isOn: this.s.profileTrafficStatistics })
                 .onChange((v: boolean) => {
@@ -1048,7 +1047,7 @@ export struct SettingsPage {
                 })
             }.width('100%')
             Text($r('app.string.settings_theme_note'))
-              .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+              .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
           }.alignItems(HorizontalAlign.Start).width('100%')
 
           Blank().height(2)
@@ -1060,7 +1059,7 @@ export struct SettingsPage {
           if (this.apiExpanded) {
           Column({ space: 8 }) {
             Row() {
-              Text($r('app.string.clash_api_enabled')).fontSize(14).layoutWeight(1)
+              Text($r('app.string.clash_api_enabled')).fontSize(15).fontColor($r('app.color.text_1')).layoutWeight(1)
               Toggle({ type: ToggleType.Switch, isOn: this.s.clashApiEnabled })
                 .onChange((value: boolean) => {
                   this.s.clashApiEnabled = value;
@@ -1068,7 +1067,7 @@ export struct SettingsPage {
                 })
             }.width('100%')
             Column() {
-              Text($r('app.string.clash_api_port')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+              Text($r('app.string.clash_api_port')).fontSize(14).fontColor($r('app.color.text_1')).width('100%')
               TextInput({ text: `${this.s.clashApiPort}` })
                 .width('100%')
                 .height(40)
@@ -1082,7 +1081,7 @@ export struct SettingsPage {
                 })
             }.alignItems(HorizontalAlign.Start).width('100%')
             Column() {
-              Text($r('app.string.clash_api_secret')).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
+              Text($r('app.string.clash_api_secret')).fontSize(14).fontColor($r('app.color.text_1')).width('100%')
               TextInput({ text: this.s.clashApiSecret })
                 .width('100%')
                 .height(40)
@@ -1093,7 +1092,7 @@ export struct SettingsPage {
                 })
             }.alignItems(HorizontalAlign.Start).width('100%')
             Text($r('app.string.clash_api_reconnect_hint'))
-              .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+              .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
           }.alignItems(HorizontalAlign.Start).width('100%')
 
           Blank().height(2)
@@ -1213,7 +1212,7 @@ export struct SettingsPage {
 
               if (this.appListError !== '') {
                 Text(this.appListError)
-                  .fontSize(11).fontColor($r('app.color.error')).width('100%')
+                  .fontSize(12).fontColor($r('app.color.error')).width('100%')
               }
 
               if (this.installedApps.length > 0) {
@@ -1222,9 +1221,9 @@ export struct SettingsPage {
                     ListItem() {
                       Row({ space: 8 }) {
                         Column({ space: 2 }) {
-                          Text(item.label).fontSize(14).width('100%')
+                          Text(item.label).fontSize(15).fontColor($r('app.color.text_1')).width('100%')
                           Text(item.bundleName)
-                            .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+                            .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
                         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
                         Toggle({ type: ToggleType.Checkbox, isOn: this.isAppSelected(item.bundleName) })
                           .onChange((selected: boolean) => {
@@ -1257,7 +1256,7 @@ export struct SettingsPage {
                   }
                 })
               Text($r('app.string.settings_per_app_manual_note'))
-                .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')
+                .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
             }
           }.alignItems(HorizontalAlign.Start).width('100%')
 

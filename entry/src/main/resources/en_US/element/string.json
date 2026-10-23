@@ -2,7 +2,7 @@
   "string": [
     {
       "name": "app_name",
-      "value": "NekoBox"
+      "value": "PaperBox"
     },
     {
       "name": "permission_read_pasteboard_reason",
@@ -10,7 +10,7 @@
     },
     {
       "name": "brand_name",
-      "value": "NEKOBOX"
+      "value": "PAPERBOX"
     },
     {
       "name": "subscription_management",
@@ -1749,6 +1749,70 @@
       "value": "Configuration"
     },
     {
+      "name": "tab_proxy",
+      "value": "Proxy"
+    },
+    {
+      "name": "tab_subscriptions",
+      "value": "Subscriptions"
+    },
+    {
+      "name": "tab_settings",
+      "value": "Settings"
+    },
+    {
+      "name": "add_subscription",
+      "value": "Add subscription"
+    },
+    {
+      "name": "settings_hub_general",
+      "value": "General"
+    },
+    {
+      "name": "settings_hub_general_desc",
+      "value": "Connection, network, DNS and appearance"
+    },
+    {
+      "name": "settings_hub_groups",
+      "value": "Groups"
+    },
+    {
+      "name": "settings_hub_groups_desc",
+      "value": "Subscription and manual groups"
+    },
+    {
+      "name": "settings_hub_route",
+      "value": "Route rules"
+    },
+    {
+      "name": "settings_hub_route_desc",
+      "value": "Routing rules and remote rule sets"
+    },
+    {
+      "name": "settings_hub_logs",
+      "value": "Logs"
+    },
+    {
+      "name": "settings_hub_logs_desc",
+      "value": "Core and app runtime logs"
+    },
+    {
+      "name": "settings_hub_tools",
+      "value": "Tools"
+    },
+    {
+      "name": "settings_hub_tools_desc",
+      "value": "Network diagnostics and utilities"
+    },
+    {
+      "name": "settings_hub_about",
+      "value": "About"
+    },
+    {
+      "name": "settings_hub_about_desc",
+      "value": "Version info and project home"
+    },
+    {
       "name": "nav_groups",
       "value": "Groups"
     },
@@ -1774,7 +1838,7 @@
     },
     {
       "name": "drawer_footer",
-      "value": "NekoBox for Harmony"
+      "value": "PaperBox"
     },
     {
       "name": "test_current_group",
@@ -2037,6 +2101,10 @@
       "value": "GitHub"
     },
     {
+      "name": "copy_action",
+      "value": "Copy"
+    },
+    {
       "name": "about_telegram",
       "value": "Telegram group"
     },
@@ -2066,7 +2134,7 @@
     },
     {
       "name": "about_license_body",
-      "value": "sing-box is GPL-3.0; the app icon comes from NekoBoxForAndroid (GPL-3.0)."
+      "value": "sing-box is GPL-3.0; this app is an independent client built on sing-box."
     },
     {
       "name": "settings_general",
@@ -2407,6 +2475,30 @@
     {
       "name": "more_actions",
       "value": "More actions"
+    },
+    {
+      "name": "home_current_node",
+      "value": "Current node"
+    },
+    {
+      "name": "home_no_node",
+      "value": "No node selected"
+    },
+    {
+      "name": "home_memory_usage",
+      "value": "Memory %1$d MB"
+    },
+    {
+      "name": "home_memory_label",
+      "value": "Memory"
+    },
+    {
+      "name": "home_local_section",
+      "value": "Local / Ungrouped"
+    },
+    {
+      "name": "sub_url_count",
+      "value": "%1$d subscriptions"
     }
   ]
 }

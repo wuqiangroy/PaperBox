@@ -1,5 +1,43 @@
-# NekoBox for Harmony(HarmonyOS 原生 VPN 客户端)    
+# PaperBox(HarmonyOS 原生 VPN 客户端)    
 欢迎加入交流群：https://t.me/+x9D290Stp9NhYWU9 邀测链接会在群内发送
+
+> **v3.0.0 起本项目更名为 PaperBox**:应用名 `PaperBox`、包名 `com.paperbox.harmonyos`、新图标(纸飞机)。下文 NekoBox 部分为 1.x~2.x 的架构与构建说明,继续有效;PaperBox 的新增内容见下一节。
+
+## PaperBox(HarmonyOS 3.0.0)
+
+基于 NekoBox for Harmony 重构品牌与界面的版本,内核仍是 **sing-box 1.14.0(含 OHOS 补丁)**,以 c-shared.so 进程内运行。
+
+**品牌与标识**
+
+- 应用名 **PaperBox**,包名 `com.paperbox.harmonyos`,版本 `3.0.0`(versionCode 3000000)
+- 界面内品牌文案(关于页标题、设置页版本行、日志/备份导出文件名)统一为 PaperBox
+
+**全新界面结构**
+
+- **底部悬浮胶囊 Tab**(代理 / 订阅 / 设置):HDS 沉浸光感材质、固定居中、支持内容从胶囊后滑出
+- **代理页 = 仪表盘**:中央连接键(连接中/已连接/断开)、当前节点与协议信息、内存占用卡(每 5s 刷新 PSS)、出站模式卡(规则 / 全局 / 直连 三档直接点选)
+- **订阅页**:按订阅 URL 分组折叠,支持列表 / 块状两种展示(块状列数随窗口宽度自适应);测速按钮独立到每组标题行
+- **设置页**:二级入口(常规设置 / 分组管理 / 路由规则 / 日志 / 工具 / 关于),进出带淡入上浮过渡;条目滚动不再误触跳转
+- 节点默认**按延迟升序**(无延迟或测速失败排最后,同延迟按节点名)
+
+**连接与测速**
+
+- URL Test 真连接测速(代理隧道 → TLS → HTTP 探活,校验响应状态码,HEAD 失败自动回退 GET),失败自动降级 TCPing
+- 订阅更新:条件请求(ETag / Last-Modified,304 不重复下载)、并发更新合并(避免启动时重复下载解析)、失败原因带错误码
+
+**后台保活**
+
+- VPN 扩展进程(:vpn)自己持有 `dataTransfer` 长时任务,扩展拿不到时由 UI 进程兜底
+- 扩展每 5s 上报心跳,UI 侧看门狗 20s 无心跳判定扩展被回收并复位连接状态
+- 扩展被系统回收后重新拉起时,若上次不是正常断开则**自动恢复连接**
+- VPN 状态通知归入静默槽位,不占用状态栏图标、不弹横幅
+
+**其他**
+
+- 关于页:检查更新与项目主页都**就地展示结果**(不跳转),GitHub 地址支持一键复制
+- 后台订阅更新复用 `dataTransfer` 任务,与 VPN 长时任务互不影响
+
+## NekoBox for Harmony(1.x ~ 2.x)
 
 参考 [NekoBoxForAndroid](https://github.com/MatsuriDayo/NekoBoxForAndroid) 架构思路、基于 **sing-box v1.11.9**(含 OHOS 补丁)内核的 HarmonyOS NEXT(Stage 模型)VPN 客户端。内核以 **c-shared .so 进程内 dlopen** 方式运行(沙箱禁止 exec 二进制),支持 Hysteria2 / TUIC v5 等协议。
 
@@ -101,3 +139,5 @@ UI 进程 EntryAbility / Index / VpnService(操作串行化)
 ## 许可
 
 sing-box 为 GPL-3.0,本项目遵循 GPL-3.0。`art/nekobox_icon.png`(应用图标)取自 [NekoBoxForAndroid](https://github.com/MatsuriDayo/NekoBoxForAndroid),遵循其 GPL-3.0 许可,版权归 NekoBoxForAndroid 原作者所有。
+
+> 自 **3.0.0(PaperBox)** 起,应用图标更换为 `paper_plane_logo.png`(纸飞机)。
