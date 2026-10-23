@@ -7,8 +7,8 @@ import { pressLightEffect } from '../common/Effects';
 import { setClipboardText } from '../utils/ClipboardHelper';
 
 const CORE_VERSION = 'sing-box 1.14.0 (OHOS c-shared)';
-const GITHUB_URL = 'https://github.com/wuqiangroy/NekoBox4Harmony';
-const RELEASES_API = 'https://api.github.com/repos/wuqiangroy/NekoBox4Harmony/releases/latest';
+const GITHUB_URL = 'https://github.com/wuqiangroy/PaperBox';
+const RELEASES_API = 'https://api.github.com/repos/wuqiangroy/PaperBox/releases/latest';
 
 /**
  * 关于页(对齐 NekoBoxForAndroid AboutFragment):

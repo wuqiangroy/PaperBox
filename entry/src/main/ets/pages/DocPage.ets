@@ -7,7 +7,7 @@ import { pressLightEffect } from '../common/Effects';
  * 使用文档页(对齐安卓 nav_faq 的 launchCustomTab):
  * 应用内 Web 视图打开项目文档,无需系统浏览器。
  */
-const DOC_URL = 'https://github.com/wuqiangroy/NekoBox4Harmony';
+const DOC_URL = 'https://github.com/wuqiangroy/PaperBox';
 
 @Entry
 @Component
