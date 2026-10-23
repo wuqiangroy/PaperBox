@@ -39,9 +39,9 @@
         "type": "vpn",
         "exported": false
         // ⚠️ 这里不能写 "backgroundModes":本 SDK 的 module.json5 schema 不给
-        // extensionAbilities 这个字段(PreBuild 直接报 00303038)。扩展进程的
-        // 长时任务改为运行时调用 backgroundTaskManager(见 VpnExtAbility.startKeepAlive),
-        // 申请不下来时由 UI 进程那份兜底(心跳里会回报 keepAlive)。
+        // extensionAbilities 这个字段(PreBuild 直接报 00303038)。
+        // 长时任务(保活)由 UI 进程 EntryAbility 统一申请(见 VpnService.acquireContinuousTask),
+        // 系统会为它挂一条托管的「正在运行」通知;用户删除通知即停止长时任务。
       }
     ],
     "requestPermissions": [

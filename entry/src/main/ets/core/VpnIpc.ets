@@ -29,20 +29,14 @@ export function publishVpnLog(line: string): void {
 
 /**
  * 扩展进程调用:状态变更通知 UI(profileId 便于 UI 判断当前节点)。
- * keepAlive:'true'/'false' = 扩展进程是否已自己拿到长时任务(空串 = 本次不带该信息,
- * UI 不改动自己那份兜底任务)。心跳里会持续回报,UI 据此决定要不要兜底。
  */
-export function publishVpnStatus(status: string, running: boolean, profileId: string = '',
-  keepAlive: string = ''): void {
+export function publishVpnStatus(status: string, running: boolean, profileId: string = ''): void {
   try {
     const payload: Record<string, string> = {
       'status': status,
       'running': running ? 'true' : 'false',
       'profileId': profileId
     };
-    if (keepAlive.length > 0) {
-      payload['keepAlive'] = keepAlive;
-    }
     const opts: commonEventManager.CommonEventPublishData = {
       bundleName: APP_BUNDLE,
       data: JSON.stringify(payload)
@@ -113,7 +107,7 @@ let subscriptionGeneration: number = 0;
 
 /** UI 进程调用:订阅扩展发来的日志、状态与流量 */
 export function subscribeVpnEvents(onLog: (line: string) => void,
-  onStatus: (status: string, running: boolean, profileId: string, keepAlive: string) => void,
+  onStatus: (status: string, running: boolean, profileId: string) => void,
   onTraffic: (upSpeed: number, downSpeed: number, totalUp: number, totalDown: number) => void): void {
   const generation = ++subscriptionGeneration;
   const info: commonEventManager.CommonEventSubscribeInfo = {
@@ -136,8 +130,7 @@ export function subscribeVpnEvents(onLog: (line: string) => void,
           const status: string = obj['status'] === undefined ? '' : `${obj['status']}`;
           const running: boolean = `${obj['running']}` === 'true';
           const profileId: string = obj['profileId'] === undefined ? '' : `${obj['profileId']}`;
-          const keepAlive: string = obj['keepAlive'] === undefined ? '' : `${obj['keepAlive']}`;
-          onStatus(status, running, profileId, keepAlive);
+          onStatus(status, running, profileId);
         } catch (e) {
           // 忽略格式错误的状态
         }

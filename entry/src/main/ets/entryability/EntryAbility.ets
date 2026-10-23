@@ -8,8 +8,6 @@ import common from '@ohos.app.ability.common';
 import notificationManager from '@ohos.notificationManager';
 import BusinessError from '@ohos.base';
 import ConfigurationConstant from '@ohos.app.ability.ConfigurationConstant';
-import backgroundTaskManager from '@ohos.resourceschedule.backgroundTaskManager';
-import wantAgent from '@ohos.app.ability.wantAgent';
 import { initStore, loadSettings, LogStore } from '../model/Store';
 import { subscribeVpnEvents, unsubscribeVpnEvents, publishAppForeground } from '../core/VpnIpc';
 import { VpnService } from '../core/VpnService';
@@ -33,13 +31,12 @@ export default class EntryAbility extends UIAbility {
   private backgroundUpdating: boolean = false;
   /** 最近一次收到扩展事件(状态/流量/心跳)的时刻:用来判断 :vpn 扩展是否还活着 */
   private vpnHeartbeatAt: number = 0;
-  /** 扩展存活看门狗:扩展被系统回收时不会有任何回调,只能靠心跳超时兜底复位 UI 状态。
-   *  ⚠️ VPN 的长时任务优先由扩展进程自己持有(见 VpnExtAbility.startKeepAlive)——
-   *  VPN 数据面在 :vpn 进程,只有扩展拿不到时这里才兜底申请一份。 */
+  /** 扩展存活看门狗:扩展被系统回收时不会有任何回调,只能靠心跳超时兜底复位 UI 状态
+   *  并自动重新拉起 VPN。 */
   private vpnWatchdog: number = -1;
-  /** UI 进程兜底申请的 dataTransfer 长时任务(仅在扩展回报 keepAlive=false 时启用) */
-  private keepAliveRunning: boolean = false;
-  private keepAliveStarting: boolean = false;
+  /** 自动拉起 VPN 的节流与熔断:最近一次时间 / 连续次数 */
+  private vpnRestartAt: number = 0;
+  private vpnRestartCount: number = 0;
   private mainWindow?: window.Window;
   /** 当前生效的深浅色判定结果(由 applyAppearance / onConfigurationUpdate 写入,供窗口/系统栏改色使用) */
   private darkTheme: boolean = false;
@@ -64,48 +61,6 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate('uiBreakpoint', breakpoint);
   }
 
-  /** 扩展回报自己没拿到长时任务时的兜底:UI 进程代申请一份 dataTransfer 任务 */
-  private async startVpnKeepAlive(): Promise<void> {
-    if (this.keepAliveRunning || this.keepAliveStarting) {
-      return;
-    }
-    this.keepAliveStarting = true;
-    try {
-      const agent = await wantAgent.getWantAgent({
-        wants: [{
-          bundleName: this.context.abilityInfo.bundleName,
-          abilityName: 'EntryAbility'
-        }],
-        actionType: wantAgent.OperationType.START_ABILITY,
-        requestCode: 1004,
-        actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
-      });
-      await backgroundTaskManager.startBackgroundRunning(
-        this.context,
-        backgroundTaskManager.BackgroundMode.DATA_TRANSFER,
-        agent);
-      this.keepAliveRunning = true;
-      LogStore.addLog('[app] 扩展未持有长时任务,已由 UI 进程兜底申请');
-    } catch (e) {
-      LogStore.addLog(`[app] UI 兜底长时任务申请失败: ${e}`);
-    } finally {
-      this.keepAliveStarting = false;
-    }
-  }
-
-  private async stopVpnKeepAlive(): Promise<void> {
-    if (!this.keepAliveRunning) {
-      return;
-    }
-    this.keepAliveRunning = false;
-    try {
-      await backgroundTaskManager.stopBackgroundRunning(this.context);
-      LogStore.addLog('[app] UI 兜底长时任务已释放');
-    } catch (e) {
-      LogStore.addLog(`[app] UI 兜底长时任务释放失败: ${e}`);
-    }
-  }
-
   /**
    * 扩展每 5s 发一次「已连接」心跳;连续 20s 一帧都没收到 ⇒ 扩展已被系统回收。
    * :vpn 进程被杀时不会给 UI 任何回调,不主动复位的话 UI 会一直显示"已连接"。
@@ -125,7 +80,35 @@ export default class EntryAbility extends UIAbility {
       AppStorage.setOrCreate('vpnStatus', 'disconnected');
       AppStorage.setOrCreate('vpnUpSpeed', 0);
       AppStorage.setOrCreate('vpnDownSpeed', 0);
+      /* 扩展被回收,保活任务已没有意义,先释放(否则通知栏会一直挂着) */
+      void VpnService.releaseContinuousTask(this.context, 'vpn');
+      /* VPN 被系统杀掉:由软件自动重新拉起(用户 2026-10-23 要求) */
+      void this.autoRestartVpn();
     }, 5000);
+  }
+
+  /** 自动重新拉起 VPN。30s 冷却避免被杀循环时反复抢占;连续 5 次失败后停止,交给用户手动重连。 */
+  private async autoRestartVpn(): Promise<void> {
+    const profileId: string = AppStorage.get<string>('vpnRunningProfileId') ?? '';
+    if (profileId.length === 0) {
+      return;
+    }
+    if (this.vpnRestartCount >= 5) {
+      LogStore.addLog('[app] VPN 连续多次被系统回收,已停止自动拉起,请在应用内手动重连');
+      return;
+    }
+    const now = Date.now();
+    if (now - this.vpnRestartAt < 30000) {
+      return;
+    }
+    this.vpnRestartAt = now;
+    this.vpnRestartCount++;
+    LogStore.addLog(`[app] 检测到 VPN 已被系统回收,自动重新拉起(第 ${this.vpnRestartCount} 次)`);
+    try {
+      await VpnService.connect(this.context, profileId, false, false);
+    } catch (e) {
+      LogStore.addLog(`[app] 自动拉起 VPN 失败: ${e}`);
+    }
   }
 
   private stopVpnWatchdog(): void {
@@ -140,7 +123,7 @@ export default class EntryAbility extends UIAbility {
       return;
     }
     this.backgroundUpdating = true;
-    let backgroundRunning: boolean = false;
+    let acquired: boolean = false;
     try {
       await initStore(this.context);
       setAppContext(this.context);
@@ -152,21 +135,11 @@ export default class EntryAbility extends UIAbility {
       if (due.length === 0) {
         return;
       }
-      /* 订阅更新用一次性的 dataTransfer 任务(与扩展进程的 VPN 长时任务互不影响) */
-      const agent = await wantAgent.getWantAgent({
-        wants: [{
-          bundleName: this.context.abilityInfo.bundleName,
-          abilityName: 'EntryAbility'
-        }],
-        actionType: wantAgent.OperationType.START_ABILITY,
-        requestCode: 1003,
-        actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
-      });
-      await backgroundTaskManager.startBackgroundRunning(
-        this.context,
-        backgroundTaskManager.BackgroundMode.DATA_TRANSFER,
-        agent);
-      backgroundRunning = true;
+      /* 与 VPN 共用一份长时任务:VPN 已在跑就不重复申请,跑完也不释放它那份 */
+      if (!VpnService.isContinuousTaskRunning()) {
+        await VpnService.acquireContinuousTask(this.context, 'subs');
+        acquired = true;
+      }
       for (const sub of due) {
         try {
           const result = await updateSubscription(sub.url);
@@ -180,12 +153,8 @@ export default class EntryAbility extends UIAbility {
     } catch (e) {
       LogStore.addLog(`[app] 后台订阅更新任务失败: ${e}`);
     } finally {
-      if (backgroundRunning) {
-        try {
-          await backgroundTaskManager.stopBackgroundRunning(this.context);
-        } catch (e) {
-          LogStore.addLog(`[app] 释放后台订阅任务失败: ${e}`);
-        }
+      if (acquired) {
+        await VpnService.releaseContinuousTask(this.context, 'subs');
       }
       this.backgroundUpdating = false;
     }
@@ -316,6 +285,8 @@ export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     LogStore.addLog('[app] PaperBox 启动');
     this.handleAction(want);
+    // 长时任务被用户/系统取消时复位内部状态
+    VpnService.subscribeContinuousTaskCancel();
     this.applyAppearance();
     /* ⚠️ 智感握姿**不在这里**启动:它要走 motion 系统服务(含一次同步调用),
        放在 onCreate 会占住启动关键路径(服务异常时表现为卡在开屏页)。
@@ -334,23 +305,21 @@ export default class EntryAbility extends UIAbility {
     // 接收 :vpn 扩展进程发来的日志与状态
     subscribeVpnEvents((line: string) => {
       LogStore.appendRemote(line);
-    }, (status: string, running: boolean, profileId: string, keepAliveHint: string) => {
+    }, (status: string, running: boolean, profileId: string) => {
       AppStorage.setOrCreate('vpnRunning', running);
       AppStorage.setOrCreate('vpnStatus', status);
       AppStorage.setOrCreate('vpnRunningProfileId', profileId);
       this.vpnHeartbeatAt = running ? Date.now() : 0;
       if (running) {
+        /* 连上了 ⇒ 之前的自动拉起算成功,计数清零 */
+        this.vpnRestartCount = 0;
         this.startVpnWatchdog();
-        /* 扩展自己拿到了长时任务就让 UI 这份退出(避免两份任务/两条通知);
-           扩展没拿到则由 UI 兜底申请 */
-        if (keepAliveHint === 'false') {
-          this.startVpnKeepAlive();
-        } else if (keepAliveHint === 'true') {
-          this.stopVpnKeepAlive();
-        }
+        /* 开启保活长时任务(系统会挂一条托管通知);用户主动连接才允许重申请 */
+        void VpnService.acquireContinuousTask(this.context, 'vpn');
       } else {
         this.stopVpnWatchdog();
-        this.stopVpnKeepAlive();
+        /* 关闭 VPN:释放长时任务,系统那条保活通知随之消失 */
+        void VpnService.releaseContinuousTask(this.context, 'vpn');
       }
     }, (upSpeed: number, downSpeed: number, totalUp: number, totalDown: number) => {
       /* 流量事件同样证明扩展活着(Clash API 关闭时不会走这里,靠 5s 状态心跳兜底) */
@@ -427,7 +396,6 @@ export default class EntryAbility extends UIAbility {
   onDestroy(): void {
     unsubscribeVpnEvents();
     this.stopVpnWatchdog();
-    this.stopVpnKeepAlive();
   }
 
   onForeground(): void {

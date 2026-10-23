@@ -583,15 +583,6 @@ export struct SettingsPage {
             }.width('100%')
 
             Row() {
-              Text($r('app.string.settings_notification_group')).fontSize(15).fontColor($r('app.color.text_1')).layoutWeight(1)
-              Toggle({ type: ToggleType.Switch, isOn: this.s.notificationGroup })
-                .onChange((v: boolean) => {
-                  this.s.notificationGroup = v;
-                  this.markDirty();
-                })
-            }.width('100%')
-
-            Row() {
               Column({ space: 2 }) {
                 Text($r('app.string.settings_speed_interval')).fontSize(15).fontColor($r('app.color.text_1')).width('100%')
                 Text($r('app.string.settings_speed_interval_sum'))
