@@ -272,6 +272,19 @@ export async function getRunningProfileId(): Promise<string> {
   return (await pref.get('running_profile_id', '')) as string;
 }
 
+/** 用户“期望 VPN 处于连接状态”的持久标记:应用被系统回收后重新启动时据此自动恢复。
+ *  只在用户主动连接/断开时改写,看门狗自动拉起不会改。 */
+export async function setVpnDesired(on: boolean): Promise<void> {
+  const pref = await requirePref();
+  await pref.put('vpn_desired_on', on ? '1' : '0');
+  await pref.flush();
+}
+
+export async function getVpnDesired(): Promise<boolean> {
+  const pref = await requirePref();
+  return ((await pref.get('vpn_desired_on', '0')) as string) === '1';
+}
+
 export async function readPrefString(key: string, dflt: string): Promise<string> {
   const pref = await requirePref();
   return (await pref.get(key, dflt)) as string;

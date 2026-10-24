@@ -4,6 +4,8 @@ import connection from '@ohos.net.connection';
 import common from '@ohos.app.ability.common';
 import fs from '@ohos.file.fs';
 import commonEventManager from '@ohos.commonEventManager';
+import notificationManager from '@ohos.notificationManager';
+import wantAgent from '@ohos.app.ability.wantAgent';
 import BusinessError from '@ohos.base';
 import { Profile, AppSettings } from '../model/Profile';
 import { initStore, loadProfiles, loadGroups, loadSettings, getPendingProfileId, setPendingProfileId, clearPendingProfileId, getRunningProfileId, setRunningProfileId, mutateProfiles, LogStore } from '../model/Store';
@@ -26,6 +28,11 @@ import { fetchTrafficTotals } from '../utils/TrafficStats';
  */
 
 const VPN_TUN_IFNAME = 'vpn-tun';
+const BUNDLE_NAME = 'com.paperbox.harmonyos';
+/** 常驻通知 ID:只在真正的 VPN 连接存续期间存在,不承担保活职责。
+ *  它与系统长时任务通知无关 —— 长时任务的 DATA_TRANSFER 会因空闲被系统撤销,
+ *  普通通知不会。 */
+const VPN_NOTIFICATION_ID: number = 1001;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -67,9 +74,18 @@ export default class VpnExtAbility extends VpnExtensionAbility {
   private sessionTotalUp: number = 0;
   private sessionTotalDown: number = 0;
   private trafficSettings: AppSettings | null = null;
+  /** 防重入:轮询间隔小于请求耗时(本地 API 被内核 GC 卡住时)不能叠加并发请求 */
+  private trafficInFlight: boolean = false;
+  /** 上一次已推送给 UI 的数值:完全相同就不再跨进程发,空闲时省掉 1Hz 的 IPC/解析 */
+  private publishedUp: number = -1;
+  private publishedDown: number = -1;
+  private publishedTotalUp: number = -1;
+  private publishedTotalDown: number = -1;
   /** 心跳定时器:每 5s 重播一次「已连接」状态。扩展被系统回收时没有任何回调,
    *  UI 端只能靠"收不到心跳"判定 VPN 已死并复位界面状态。 */
   private heartbeatTimer: number = -1;
+  /** 常驻通知发布失败计数:连续失败(通知权限被关)后本次会话不再尝试 */
+  private notificationFailStreak: number = 0;
   // 网络变化重置连接(功能对齐安卓 networkChangeResetConnections,2.0.2 起默认关)
   private netConnection: connection.NetConnection | null = null;
   private netChangeGeneration: number = 0;
@@ -321,6 +337,7 @@ export default class VpnExtAbility extends VpnExtensionAbility {
   private async doTeardown(silent: boolean): Promise<void> {
     this.stopHeartbeat();
     this.stopTrafficReporter();
+    this.cancelNotification();
     try {
       // 内核长时间闲置后可能无响应,stopCore 回调若永不触发会卡死 starting,
       // 导致之后所有启动请求被队列吞掉——这里必须带超时兜底。
@@ -592,6 +609,7 @@ export default class VpnExtAbility extends VpnExtensionAbility {
     await setRunningProfileId(pendingId);
     this.startTrafficReporter();
     this.startHeartbeat();
+    await this.showConnectedNotification(node.name);
     publishVpnStatus(`connected:${node.name}`, true, pendingId);
     await clearPendingProfileId();
   }
@@ -614,6 +632,66 @@ export default class VpnExtAbility extends VpnExtensionAbility {
     }
   }
 
+  /**
+   * 常驻通知:只随真实连接存在,用于展示状态并提供「断开」入口。
+   * 不承担保活职责 —— 系统长时任务的 DATA_TRANSFER 通知会因空闲被撤销,
+   * 而这条普通通知不会,也不会触发系统的业务一致性校验。
+   * 归属静默槽位(CONTENT_INFORMATION):不占状态栏图标、不弹横幅。
+   */
+  private async showConnectedNotification(nodeName: string): Promise<void> {
+    if (this.notificationFailStreak >= 5) {
+      return; // 连续发布失败(通知权限被拒):本次会话不再尝试,不影响 VPN
+    }
+    try {
+      const res = this.context.resourceManager;
+      const disconnectAgent = await wantAgent.getWantAgent({
+        wants: [{
+          bundleName: BUNDLE_NAME,
+          abilityName: 'EntryAbility',
+          parameters: { 'action': 'disconnect' }
+        }],
+        actionType: wantAgent.OperationType.START_ABILITY,
+        requestCode: 1002,
+        actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
+      });
+      const request: notificationManager.NotificationRequest = {
+        id: VPN_NOTIFICATION_ID,
+        // 点通知/按钮后不要自动消失,交给断开流程统一 cancel
+        tapDismissed: false,
+        notificationSlotType: notificationManager.SlotType.CONTENT_INFORMATION,
+        content: {
+          notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+          normal: {
+            title: res.getStringSync($r('app.string.notification_vpn_connected')),
+            text: nodeName
+          }
+        },
+        actionButtons: [{
+          title: res.getStringSync($r('app.string.notification_disconnect')),
+          wantAgent: disconnectAgent
+        }]
+      };
+      await notificationManager.publish(request);
+      this.notificationFailStreak = 0;
+      LogStore.addLog('[vpn] 常驻通知已发布');
+    } catch (e) {
+      this.notificationFailStreak++;
+      if (this.notificationFailStreak === 1 || this.notificationFailStreak === 5) {
+        LogStore.addLog(`[vpn] 常驻通知发布失败(第 ${this.notificationFailStreak} 次): ${e}`);
+      }
+    }
+  }
+
+  private cancelNotification(): void {
+    try {
+      notificationManager.cancel(VPN_NOTIFICATION_ID).catch((e: BusinessError) => {
+        // 通知不存在时忽略
+      });
+    } catch (e) {
+      // ignore
+    }
+  }
+
   private startTrafficReporter(): void {
     this.stopTrafficReporter();
     const settings = this.trafficSettings;
@@ -629,25 +707,44 @@ export default class VpnExtAbility extends VpnExtensionAbility {
     this.sessionTotalDown = 0;
     const generation = ++this.trafficGeneration;
     const poll = async (): Promise<void> => {
-      const startedAt = Date.now();
-      const totals = await fetchTrafficTotals(settings.clashApiPort, settings.clashApiSecret);
-      if (generation !== this.trafficGeneration || !this.started || totals === null) {
+      if (this.trafficInFlight) {
         return;
       }
-      if (this.trafficLastAt > 0) {
-        const elapsedSeconds = Math.max(0.001, (startedAt - this.trafficLastAt) / 1000);
-        this.trafficUpSpeed = Math.max(0,
-          Math.round((totals.up - this.trafficLastUp) / elapsedSeconds));
-        this.trafficDownSpeed = Math.max(0,
-          Math.round((totals.down - this.trafficLastDown) / elapsedSeconds));
+      this.trafficInFlight = true;
+      try {
+        const startedAt = Date.now();
+        const totals = await fetchTrafficTotals(settings.clashApiPort, settings.clashApiSecret);
+        if (generation !== this.trafficGeneration || !this.started || totals === null) {
+          return;
+        }
+        if (this.trafficLastAt > 0) {
+          const elapsedSeconds = Math.max(0.001, (startedAt - this.trafficLastAt) / 1000);
+          this.trafficUpSpeed = Math.max(0,
+            Math.round((totals.up - this.trafficLastUp) / elapsedSeconds));
+          this.trafficDownSpeed = Math.max(0,
+            Math.round((totals.down - this.trafficLastDown) / elapsedSeconds));
+        }
+        this.trafficLastUp = totals.up;
+        this.trafficLastDown = totals.down;
+        this.trafficLastAt = startedAt;
+        this.sessionTotalUp = totals.up;
+        this.sessionTotalDown = totals.down;
+        /* 完全没变化就不发:空闲 VPN 不再每秒做一次 JSON + CommonEvent + UI 更新 */
+        if (this.trafficUpSpeed === this.publishedUp
+          && this.trafficDownSpeed === this.publishedDown
+          && this.sessionTotalUp === this.publishedTotalUp
+          && this.sessionTotalDown === this.publishedTotalDown) {
+          return;
+        }
+        this.publishedUp = this.trafficUpSpeed;
+        this.publishedDown = this.trafficDownSpeed;
+        this.publishedTotalUp = this.sessionTotalUp;
+        this.publishedTotalDown = this.sessionTotalDown;
+        publishVpnTraffic(this.trafficUpSpeed, this.trafficDownSpeed,
+          this.sessionTotalUp, this.sessionTotalDown);
+      } finally {
+        this.trafficInFlight = false;
       }
-      this.trafficLastUp = totals.up;
-      this.trafficLastDown = totals.down;
-      this.trafficLastAt = startedAt;
-      this.sessionTotalUp = totals.up;
-      this.sessionTotalDown = totals.down;
-      publishVpnTraffic(this.trafficUpSpeed, this.trafficDownSpeed,
-        this.sessionTotalUp, this.sessionTotalDown);
     };
     void poll();
     // 仪表盘刷新间隔(对齐安卓 speedInterval,默认 1000ms,允许 500ms~10s)
@@ -658,6 +755,11 @@ export default class VpnExtAbility extends VpnExtensionAbility {
 
   private stopTrafficReporter(): void {
     this.trafficGeneration++;
+    this.trafficInFlight = false;
+    this.publishedUp = -1;
+    this.publishedDown = -1;
+    this.publishedTotalUp = -1;
+    this.publishedTotalDown = -1;
     if (this.trafficTimer >= 0) {
       clearInterval(this.trafficTimer);
       this.trafficTimer = -1;

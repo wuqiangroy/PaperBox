@@ -25,6 +25,7 @@ import { UiSpec } from '../common/UiSpec';
 import { illuminatedEffect, pressLightEffect } from '../common/Effects';
 import { GlowIconButton } from '../common/components/GlowIconButton';
 import { HdsMenu, MenuItemData } from '../common/components/FlowMenu';
+import { ArrayDataSource } from '../common/components/ArrayDataSource';
 import { SettingsPage } from './SettingsPage';
 import { GroupPage } from './GroupPage';
 import { ToolsPage } from './ToolsPage';
@@ -33,7 +34,7 @@ import { RouteRulesPanel } from './RouteRulesPage';
 import { LogPanel } from './LogPage';
 
 import { Profile, ProfileGroup, AppSettings, profileTypeLabel } from '../model/Profile';
-import { initStore, loadProfiles, saveProfiles, loadGroups, loadSettings, saveSettings, readPrefString, writePrefString, ensureGroupByName, LogStore } from '../model/Store';
+import { initStore, loadProfiles, saveProfiles, mutateProfiles, loadGroups, loadSettings, saveSettings, readPrefString, writePrefString, ensureGroupByName, getVpnDesired, getRunningProfileId, LogStore } from '../model/Store';
 import { VpnService } from '../core/VpnService';
 import { parseShareText } from '../utils/LinkParser';
 import { getClipboardText, setClipboardText } from '../utils/ClipboardHelper';
@@ -92,6 +93,9 @@ const SETTINGS_SECTION_SYMBOLS: Array<Resource> = [
 const OVERFLOW_MENU_ANCHOR: string = 'nbOverflowAnchor';
 /** 订阅页"本地/未分组"分区的 key */
 const LOCAL_SECTION_KEY: string = 'local';
+/** 节点视图(列表/块状)与订阅折叠状态的持久化键:重启后保持用户改过的布局 */
+const PREF_NODE_VIEW_MODE: string = 'node_view_mode';
+const PREF_COLLAPSED_KEYS: string = 'collapsed_keys';
 
 /** 订阅页折叠列表的行模型:kind = header(订阅标题) / node(节点卡) */
 class AccordionRow {
@@ -115,36 +119,100 @@ class AccordionRow {
 @Entry
 @Component
 struct Index {
-  @State profiles: Array<Profile> = [];
-  @State groups: Array<ProfileGroup> = [];
-  @State selectedId: string = '';
+  /* 节点列表/订阅折叠列表改用 LazyForEach:这些 @Watch 在“影响列表内容”的状态变化时
+     同步数据源;实时流量等纯数值状态不在这里,避免每秒重建列表。 */
+  @State @Watch('onListModelChanged') profiles: Array<Profile> = [];
+  @State @Watch('onListModelChanged') groups: Array<ProfileGroup> = [];
+  @State @Watch('onListModelChanged') selectedId: string = '';
+  /* latencies 不挂 @Watch:测速时每 300ms 变一次,整表 reset 会把列表来回重建;
+     改为逐条 notifyItemChanged(见 runProfilesTest/flushPending)。 */
   @State latencies: Record<string, number> = {};
   @State testing: boolean = false;
-  @State settings: AppSettings = new AppSettings();
-  @State subscriptions: Array<SubInfo> = [];
+  @State @Watch('onListModelChanged') settings: AppSettings = new AppSettings();
+  @State @Watch('onListModelChanged') subscriptions: Array<SubInfo> = [];
   /** 订阅页正在更新的订阅 URL("更新"按钮的忙碌态) */
   @State updatingSubUrl: string = '';
   @State activeConfigUrl: string = '';
-  @State activeTab: number = 0;          // 0 代理 / 1 订阅 / 2 设置
+  @State @Watch('onListModelChanged') activeTab: number = 0;          // 0 代理 / 1 订阅 / 2 设置
   /** 设置页当前二级分区(空串 = 设置首页入口列表) */
   @State settingsSection: string = '';
+  /** 常规设置页是否有未保存修改(顶栏保存按钮据此灰/蓝) */
+  @State settingsDirty: boolean = false;
+  /** 顶栏保存按钮点击计数:自增后由 SettingsPage 的 @Watch 触发保存 */
+  @State settingsSaveTick: number = 0;
   @State uiUptime: number = 0;
-  @State nodeSearch: string = '';
+  @State @Watch('onListModelChanged') nodeSearch: string = '';
   @State searchVisible: boolean = false;
   /** 节点展示方式:'list' 列表 / 'grid' 块状(参考 FlClash,两种视图都可选) */
   @State nodeViewMode: string = 'list';
   /** 块状视图列数:按窗口宽度自适应(手机 2 列,平板 3~4 列) */
   @State gridColumns: number = 2;
   /** 订阅页折叠状态:存**已折叠**的 key(缺省全部展开,更接近"节点直接可见") */
-  @State collapsedKeys: Array<string> = [];
+  @State @Watch('onListModelChanged') collapsedKeys: Array<string> = [];
+  /** 列表数据源同步:只同步当前 Tab,避免另一页白算;key 里带 revision 让同 key 内容也能刷新 */
+  private onListModelChanged(): void {
+    if (this.activeTab === 0) {
+      this.syncNodeSource();
+    } else if (this.activeTab === 1) {
+      this.syncAccSource();
+    }
+  }
+
+  private syncNodeSource(): void {
+    this.nodeRevision++;
+    this.nodeSource.reset(this.visibleProfiles(this.selectedGroupId));
+  }
+
+  private syncAccSource(): void {
+    this.accRevision++;
+    this.accSource.reset(this.accordionRows());
+  }
+
+  private syncCurrentList(): void {
+    if (this.activeTab === 1) {
+      this.syncAccSource();
+    } else {
+      this.syncNodeSource();
+    }
+  }
+
+  /** 延迟结果变化:只重绘对应节点卡(订阅页的卡片在 accSource 里) */
+  private refreshLatencyItem(id: string): void {
+    if (this.activeTab === 1) {
+      this.refreshAccItem(`p:${id}`);
+    } else {
+      this.refreshNodeItem(id);
+    }
+  }
+
+  /** 点按光效:只重绘被按的那一项(LazyForEach 下父状态变化不会自动重建 item) */
+  private refreshNodeItem(id: string): void {
+    this.nodeSource.notifyItemChanged(this.nodeSource.indexOf((p: Profile) => p.id === id));
+  }
+
+  private refreshAccItem(key: string): void {
+    this.accSource.notifyItemChanged(this.accSource.indexOf((row: AccordionRow) => row.key === key));
+  }
   /** 首页仪表盘:当前应用占用内存(MB),定时刷新 */
   @State memMb: number = 0;
   /** 当前被按下的元素 key(底部 Tab / 节点卡 / 模式按钮 / FAB):"按下才亮"靠它逐颗判断 */
   @State litKey: string = '';
+  /** 布局偏好只从存储加载一次:避免刷新与写入并发时把刚切换的视图/折叠状态读回旧值 */
+  private layoutPrefLoaded: boolean = false;
+  /** 代理页节点列表数据源(LazyForEach:只创建可视区节点卡) */
+  private nodeSource: ArrayDataSource<Profile> = new ArrayDataSource<Profile>();
+  /** 订阅页折叠列表数据源 */
+  private accSource: ArrayDataSource<AccordionRow> = new ArrayDataSource<AccordionRow>();
+  /** 每次同步 +1 并参与 key:保证同一节点在延迟/选中态变化后也会重建 */
+  private nodeRevision: number = 0;
+  private accRevision: number = 0;
   /** 配置页列表的滚动器(列表滚动位置复位 / 分组切换后回到顶部都靠它) */
   private configScroller: Scroller = new Scroller();
   /** 块状视图的滚动器(同一个 Scroller 不能同时绑 List 和 Grid) */
   private gridScroller: Scroller = new Scroller();
+  /** 设置首页与常规设置页的滚动器:交给 HDS 标题栏 ⇒ 与订阅页同一套滚动沉浸光感 */
+  private settingsHubScroller: Scroller = new Scroller();
+  private settingsPageScroller: Scroller = new Scroller();
   /** 内存占用轮询定时器(首页仪表盘) */
   private memTimer: number = -1;
   /** 顶栏 ⋮ 的沉浸光感菜单(照 RzdSchool HdsMenu:openMenu + 自绘面板 + 模糊背板 + 自适应取色) */
@@ -158,7 +226,7 @@ struct Index {
   /** 内容区顶部让位(vp):运行时用探针量「顶栏底边 − 内容区原点」得到,不再靠猜常数 */
   @State contentTopInset: number = 96;
   /** 当前选中的分组(配置页顶部分类条;空串 = 未分组) */
-  @State selectedGroupId: string = '';
+  @State @Watch('onListModelChanged') selectedGroupId: string = '';
   @State appVersion: string = '';
   @StorageLink('uiBreakpoint') uiBreakpoint: string = 'compact';
   @StorageLink('vpnRunning') @Watch('onRunningChange') isRunning: boolean = false;
@@ -169,11 +237,6 @@ struct Index {
   @StorageLink('vpnTotalDown') totalDown: number = 0;
   private context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
   private switching: boolean = false;
-  private speedTimer: number = -1;
-  private speedPollGeneration: number = 0;
-  private lastUp: number = 0;
-  private lastDown: number = 0;
-  private lastTrafficAt: number = 0;
   private uptimeTimer: number = -1;
 
   aboutToAppear(): void {
@@ -191,7 +254,7 @@ struct Index {
     this.autoUpdateSubs();
     this.autoConnect();
     if (this.isRunning) {
-      this.startSpeedPoller();
+      /* 流量数值由 :vpn 扩展每秒推送(VPN_EVENT_TRAFFIC),主页不再自己轮询 clash API */
       this.startUptimeTimer();
     }
   }
@@ -249,6 +312,7 @@ struct Index {
   onBackPress(): boolean {
     if (this.activeTab === 2 && this.settingsSection.length > 0) {
       this.settingsSection = '';
+      this.settingsDirty = false;
       return true;
     }
     if (this.activeTab !== 0) {
@@ -290,7 +354,6 @@ struct Index {
       this.memTimer = -1;
     }
     this.cancelSearchFilterTimer();
-    this.stopSpeedPoller();
     if (this.uptimeTimer >= 0) {
       clearInterval(this.uptimeTimer);
       this.uptimeTimer = -1;
@@ -326,11 +389,10 @@ struct Index {
 
   onRunningChange(): void {
     if (this.isRunning) {
-      this.startSpeedPoller();
       this.startUptimeTimer();
     } else {
-      this.stopSpeedPoller();
       this.stopUptimeTimer();
+      this.resetTrafficStats();
     }
     this.refresh();
   }
@@ -352,6 +414,22 @@ struct Index {
         this.selectedId = savedNodeId;
       } else if (this.selectedId.length === 0 && this.profiles.length > 0) {
         this.selectedId = this.profiles[0].id;
+      }
+      /* 节点布局(列表/块状)与订阅折叠状态也持久化:退出重进不能回到默认布局 */
+      if (!this.layoutPrefLoaded) {
+        this.layoutPrefLoaded = true;
+        const savedViewMode = await readPrefString(PREF_NODE_VIEW_MODE, '');
+        this.nodeViewMode = savedViewMode === 'grid' ? 'grid' : 'list';
+        const savedCollapsed = await readPrefString(PREF_COLLAPSED_KEYS, '');
+        if (savedCollapsed.length === 0) {
+          this.collapsedKeys = [];
+        } else {
+          try {
+            this.collapsedKeys = JSON.parse(savedCollapsed) as Array<string>;
+          } catch (e) {
+            this.collapsedKeys = [];
+          }
+        }
       }
       /* 分组分类条:分组/节点变化后校正选中项(被删/被合并时回落到第一个) */
       this.ensureSelectedGroup();
@@ -384,64 +462,36 @@ struct Index {
     }
   }
 
-  /** 启动时自动连接已选中的节点(对齐安卓 isAutoConnect;默认关闭) */
+  /** 启动时恢复连接:
+   *  1) 设置里开了“自动连接” → 连当前选中节点(对齐安卓 isAutoConnect);
+   *  2) 否则检查持久化的“期望连接”标记 —— 上次是用户主动连接、应用却被系统
+   *     回收的话,重新打开应用时自动恢复,避免 VPN 静默消失。 */
   async autoConnect(): Promise<void> {
     try {
-      if (!this.settings.autoConnect) {
-        return;
-      }
       if (this.isRunning) {
         return;
       }
-      if (this.selectedId.length === 0) {
+      if (this.settings.autoConnect && this.selectedId.length > 0) {
+        LogStore.addLog('[app] 自动连接已启用,正在启动 VPN…');
+        await VpnService.connect(this.context, this.selectedId);
         return;
       }
-      LogStore.addLog('[app] 自动连接已启用,正在启动 VPN…');
-      await VpnService.connect(this.context, this.selectedId);
+      if (!(await getVpnDesired())) {
+        return;
+      }
+      const lastId: string = await getRunningProfileId();
+      const profileId: string = lastId.length > 0 ? lastId : this.selectedId;
+      if (profileId.length === 0) {
+        return;
+      }
+      LogStore.addLog('[app] 检测到上次连接未正常结束,自动恢复 VPN');
+      await VpnService.connect(this.context, profileId, false, false);
     } catch (e) {
       LogStore.addLog(`[app] 自动连接失败: ${subErrorText(e as Object)}`);
     }
   }
 
-  // ---------------------------------------------------------------- 速度/计时轮询
-
-  private startSpeedPoller(): void {
-    this.stopSpeedPoller();
-    if (!this.isRunning || !this.settings.clashApiEnabled) {
-      return;
-    }
-    this.lastUp = 0;
-    this.lastDown = 0;
-    this.lastTrafficAt = 0;
-    AppStorage.setOrCreate('vpnUpSpeed', 0);
-    AppStorage.setOrCreate('vpnDownSpeed', 0);
-    const generation = ++this.speedPollGeneration;
-    const poll = async (): Promise<void> => {
-      const startedAt = Date.now();
-      const t = await fetchTrafficTotals(this.settings.clashApiPort, this.settings.clashApiSecret);
-      if (generation !== this.speedPollGeneration || !this.isRunning || !this.settings.clashApiEnabled || t === null) {
-        return;
-      }
-      if (this.lastTrafficAt <= 0) {
-        this.lastUp = t.up;
-        this.lastDown = t.down;
-        this.lastTrafficAt = startedAt;
-        AppStorage.setOrCreate('vpnUpSpeed', 0);
-        AppStorage.setOrCreate('vpnDownSpeed', 0);
-      } else {
-        const elapsedSeconds = Math.max(0.001, (startedAt - this.lastTrafficAt) / 1000);
-        AppStorage.setOrCreate('vpnUpSpeed', Math.max(0, Math.round((t.up - this.lastUp) / elapsedSeconds)));
-        AppStorage.setOrCreate('vpnDownSpeed', Math.max(0, Math.round((t.down - this.lastDown) / elapsedSeconds)));
-        this.lastUp = t.up;
-        this.lastDown = t.down;
-        this.lastTrafficAt = startedAt;
-      }
-      AppStorage.setOrCreate('vpnTotalUp', t.up);
-      AppStorage.setOrCreate('vpnTotalDown', t.down);
-    };
-    void poll();
-    this.speedTimer = setInterval(() => { void poll(); }, 1000);
-  }
+  // ---------------------------------------------------------------- 计时 / 流量清零
 
   private startUptimeTimer(): void {
     this.stopUptimeTimer();
@@ -466,17 +516,12 @@ struct Index {
     AppStorage.setOrCreate('uiUptimeStart', 0);
   }
 
-  private stopSpeedPoller(): void {
-    this.speedPollGeneration++;
-    if (this.speedTimer >= 0) {
-      clearInterval(this.speedTimer);
-      this.speedTimer = -1;
-    }
-    this.lastUp = 0;
-    this.lastDown = 0;
-    this.lastTrafficAt = 0;
+  /** 断开后清空仪表盘数值(连接时由 VpnService.connect 清零,这里只处理 UI 侧残留) */
+  private resetTrafficStats(): void {
     AppStorage.setOrCreate('vpnUpSpeed', 0);
     AppStorage.setOrCreate('vpnDownSpeed', 0);
+    AppStorage.setOrCreate('vpnTotalUp', 0);
+    AppStorage.setOrCreate('vpnTotalDown', 0);
   }
 
   // ---------------------------------------------------------------- 连接控制
@@ -622,6 +667,7 @@ struct Index {
       }
     }
     this.latencies = kept;
+    this.syncCurrentList();
     promptAction.showToast({ message: $r('app.string.index_testing_count', targets.length) });
     await this.runProfilesTest(targets);
   }
@@ -636,6 +682,8 @@ struct Index {
        把主页整页重渲染 N 次,节点多时 UI 线程被刷爆 —— 表现为"测速中页面卡死、
        点搜索/点按钮都没反应"。结果先进缓冲,每 300ms 合并刷一次,测完补最后一次。 */
     let pending: Record<string, number> = {};
+    /** 本次测速的最终结果(按节点 id):结束后按 id 合并回存储,避免整表覆盖并发的订阅更新 */
+    const results: Record<string, number> = {};
     let flushTimer = -1;
     const flushPending = (): void => {
       if (flushTimer >= 0) {
@@ -654,10 +702,19 @@ struct Index {
         next[k] = pending[k];
       }
       this.latencies = next;
+      if (this.settings.profileSortMode === 'latency') {
+        /* 延迟排序下顺序会变:只能整体重排 */
+        this.syncCurrentList();
+      } else {
+        for (const k of keys) {
+          this.refreshLatencyItem(k);
+        }
+      }
       pending = {};
     };
     const onOne = (id: string, ms: number): void => {
       pending[id] = ms;
+      results[id] = ms;
       const profile = this.profiles.find((item: Profile) => item.id === id);
       if (profile !== undefined) {
         profile.latencyMs = ms;
@@ -686,12 +743,33 @@ struct Index {
         }
       }
       flushPending();
-      await saveProfiles(this.profiles);
+      await this.persistLatencyResults(results);
       this.profiles = this.profiles.slice();
       promptAction.showToast({ message: $r('app.string.speed_test_complete') });
     } finally {
       flushPending();
       this.testing = false;
+    }
+  }
+
+  /** 把测速结果按节点 id 合并写回存储(读最新列表再改,避免覆盖并发写入的其它字段)。 */
+  private async persistLatencyResults(results: Record<string, number>): Promise<void> {
+    if (Object.keys(results).length === 0) {
+      return;
+    }
+    const testedAt = Date.now();
+    try {
+      await mutateProfiles((list: Array<Profile>): Array<Profile> => {
+        for (const p of list) {
+          if (results[p.id] !== undefined) {
+            p.latencyMs = results[p.id];
+            p.latencyTestedAt = testedAt;
+          }
+        }
+        return list;
+      });
+    } catch (e) {
+      LogStore.addLog(`[ui] 测速结果保存失败: ${e}`);
     }
   }
 
@@ -707,6 +785,7 @@ struct Index {
     }
     const next: Record<string, number> = {};
     this.latencies = next;
+    this.syncCurrentList();
     if (changed) {
       await saveProfiles(this.profiles);
       this.profiles = this.profiles.slice();
@@ -810,9 +889,6 @@ struct Index {
 
   /** 清除累计流量统计(对齐安卓 action_clear_traffic_statistics) */
   clearTrafficStatistics(): void {
-    this.lastUp = 0;
-    this.lastDown = 0;
-    this.lastTrafficAt = 0;
     AppStorage.setOrCreate('vpnTotalUp', 0);
     AppStorage.setOrCreate('vpnTotalDown', 0);
     promptAction.showToast({ message: $r('app.string.traffic_stats_cleared') });
@@ -1032,6 +1108,7 @@ struct Index {
       }
       next[p.id] = delay;
       this.latencies = next;
+      this.refreshLatencyItem(p.id);
       promptAction.showToast({ message: $r('app.string.url_test_result', delay) });
     } catch (e) {
       const message = e instanceof Error ? e.message : `${e}`;
@@ -1708,6 +1785,11 @@ struct Index {
       } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
         this.litKey = '';
       }
+      if (this.activeTab === 1) {
+        this.refreshAccItem(`p:${p.id}`);
+      } else {
+        this.refreshNodeItem(p.id);
+      }
     })
     .onClick(() => this.onNodeTap(p))
     .bindContextMenu(this.profileContextMenu(p), ResponseType.LongPress, {
@@ -1775,6 +1857,11 @@ struct Index {
       } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
         this.litKey = '';
       }
+      if (this.activeTab === 1) {
+        this.refreshAccItem(`p:${p.id}`);
+      } else {
+        this.refreshNodeItem(p.id);
+      }
     })
     .onClick(() => this.onNodeTap(p))
     .bindContextMenu(this.profileContextMenu(p), ResponseType.LongPress, {
@@ -1807,12 +1894,13 @@ struct Index {
       .columnStart(0)
       .columnEnd(this.gridColumns - 1)
 
-      ForEach(this.visibleProfiles(this.selectedGroupId), (profile: Profile) => {
+      LazyForEach(this.nodeSource, (profile: Profile) => {
         GridItem() {
           this.gridNodeCard(profile)
         }
-      }, (profile: Profile) => profile.id)
+      }, (profile: Profile) => `${profile.id}#${this.nodeRevision}`)
     }
+    .cachedCount(6)
     .columnsTemplate(this.gridTemplate())
     .columnsGap(8)
     .rowsGap(8)
@@ -1889,12 +1977,13 @@ struct Index {
               .height(Math.max(0, this.contentTopInset - 8))
           }
           .selectable(false)
-          ForEach(this.visibleProfiles(this.selectedGroupId), (profile: Profile) => {
+          LazyForEach(this.nodeSource, (profile: Profile) => {
             ListItem() {
               this.nodeCard(profile)
             }
-          }, (profile: Profile) => profile.id)
+          }, (profile: Profile) => `${profile.id}#${this.nodeRevision}`)
         }
+        .cachedCount(6)
         .edgeEffect(EdgeEffect.Spring)
         .layoutWeight(1)
         .width('100%')
@@ -2068,6 +2157,7 @@ struct Index {
           iconColor: $r('app.color.text_1'),
           onTap: () => {
             this.settingsSection = '';
+            this.settingsDirty = false;
           }
         })
       }
@@ -2108,8 +2198,37 @@ struct Index {
           iconColor: $r('app.color.text_1'),
           onTap: () => {
             this.nodeViewMode = this.nodeViewMode === 'grid' ? 'list' : 'grid';
+            void writePrefString(PREF_NODE_VIEW_MODE, this.nodeViewMode);
           }
         })
+      }
+      /* 常规设置:保存按钮固定在顶栏,与标题同一行;默认灰、有改动才变蓝。
+         点击只递增计数,真正的保存由 SettingsPage 的 @Watch 执行,避免把页面状态提到壳层。 */
+      if (this.activeTab === 2 && this.settingsSection === 'general') {
+        Button($r('app.string.save'))
+          .height(32)
+          .fontSize(14)
+          .padding({ left: 12, right: 12 })
+          .backgroundColor(this.settingsDirty ? $r('app.color.primary') : $r('app.color.control_disabled'))
+          .fontColor($r('app.color.surface'))
+          .visualEffect(pressLightEffect(this.litKey === 'settings:save', true))
+          .scale({
+            x: this.litKey === 'settings:save' ? 0.94 : 1.0,
+            y: this.litKey === 'settings:save' ? 0.94 : 1.0
+          })
+          .onTouch((event: TouchEvent) => {
+            if (event.type === TouchType.Down) {
+              this.litKey = 'settings:save';
+            } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+              this.litKey = '';
+            }
+          })
+          .onClick(() => {
+            if (this.settingsDirty) {
+              this.settingsSaveTick += 1;
+            }
+          })
+          .margin({ right: 8 })
       }
     }
     .alignItems(VerticalAlign.Center)
@@ -2248,27 +2367,45 @@ struct Index {
       .justifyContent(FlexAlign.Center)
 
       /* 内存占用 + 出站模式:两张信息卡(参考 FlClash);
-         出站模式直接列出三档可点,内存卡用图标填补纵向空间 */
+         内存卡以灰色 RAM 字样作背景水印,数值竖向居中 */
       Row({ space: 10 }) {
-        Column({ space: 4 }) {
-          Text($r('app.string.home_memory_label'))
-            .fontSize(11.5)
+        Stack({ alignContent: Alignment.Bottom }) {
+          /* 背景水印:底部大号灰字 */
+          Text('RAM')
+            .fontSize(46)
+            .fontWeight(800)
+            .letterSpacing(1)
+            .maxLines(1)
             .fontColor($r('app.color.text_3'))
-            .width('100%')
-            .textAlign(TextAlign.Center)
-          Blank()
-          SymbolGlyph($r('sys.symbol.memory_module'))
-            .fontSize(38)
-            .fontColor([$r('app.color.text_3')])
-          Blank()
-          Text(`${this.memMb} MB`)
-            .fontSize(20)
-            .fontWeight(700)
-            .fontColor($r('app.color.text_1'))
-            .width('100%')
-            .textAlign(TextAlign.Center)
+            .opacity(0.09)
+            .margin({ bottom: -12 })
+          Column() {
+            Text($r('app.string.home_memory_label'))
+              .fontSize(11.5)
+              .fontColor($r('app.color.text_3'))
+              .width('100%')
+              .textAlign(TextAlign.Center)
+            Column() {
+              Row({ space: 3 }) {
+                Text(`${this.memMb}`)
+                  .fontSize(28)
+                  .fontWeight(700)
+                  .fontColor($r('app.color.text_1'))
+                Text('MB')
+                  .fontSize(11)
+                  .fontColor($r('app.color.text_3'))
+                  .margin({ bottom: 3 })
+              }
+              .alignItems(VerticalAlign.Bottom)
+            }
+            .layoutWeight(1)
+            .justifyContent(FlexAlign.Center)
+            .alignItems(HorizontalAlign.Center)
+          }
+          .width('100%')
+          .height('100%')
+          .alignItems(HorizontalAlign.Center)
         }
-        .alignItems(HorizontalAlign.Center)
         .layoutWeight(1)
         .height(166)
         .padding({ left: 14, right: 14, top: 12, bottom: 12 })
@@ -2276,25 +2413,35 @@ struct Index {
         .borderRadius(16)
         .shadow({ radius: 6, color: $r('app.color.shadow_color'), offsetY: 1 })
 
-        Column({ space: 6 }) {
+        Column({ space: 4 }) {
           Text($r('app.string.outbound_mode'))
             .fontSize(11.5)
             .fontColor($r('app.color.text_3'))
+            .width('100%')
+            .textAlign(TextAlign.Center)
           ForEach(OUTBOUND_MODES, (mode: string, index: number) => {
-            Row({ space: 8 }) {
+            Row({ space: 10 }) {
+              /* 单选圈:未选中空心,选中实心点 */
+              Stack() {
+                Circle({ width: 18, height: 18 })
+                  .fill(Color.Transparent)
+                  .stroke(this.settings.mode === mode ? $r('app.color.primary') : $r('app.color.text_3'))
+                  .strokeWidth(1.5)
+                if (this.settings.mode === mode) {
+                  Circle({ width: 9, height: 9 })
+                    .fill($r('app.color.primary'))
+                }
+              }
+              .width(18)
+              .height(18)
               Text(OUTBOUND_MODE_LABELS[index])
                 .fontSize(14.5)
                 .fontWeight(this.settings.mode === mode ? 700 : 500)
                 .fontColor(this.settings.mode === mode ? $r('app.color.primary') : $r('app.color.text_1'))
                 .layoutWeight(1)
-              if (this.settings.mode === mode) {
-                SymbolGlyph($r('sys.symbol.checkmark'))
-                  .fontSize(15)
-                  .fontColor([$r('app.color.primary')])
-              }
             }
             .width('100%')
-            .height(34)
+            .height(36)
             .padding({ left: 10, right: 10 })
             .borderRadius(10)
             .backgroundColor(this.settings.mode === mode ? $r('app.color.surface_selected') : Color.Transparent)
@@ -2356,6 +2503,57 @@ struct Index {
       next.push(key);
     }
     this.collapsedKeys = next;
+    void writePrefString(PREF_COLLAPSED_KEYS, JSON.stringify(next));
+  }
+
+  /** 订阅页标题行:按订阅 URL 取流量/到期信息(来自响应头 subscription-userinfo) */
+  private subOf(url: string): SubInfo | undefined {
+    return this.subscriptions.find((s: SubInfo) => s.url === url);
+  }
+
+  private subHasMeta(url: string): boolean {
+    const sub = this.subOf(url);
+    return sub !== undefined && (sub.total > 0 || sub.upload + sub.download > 0 || sub.expire > 0);
+  }
+
+  private subHasTraffic(url: string): boolean {
+    const sub = this.subOf(url);
+    return sub !== undefined && (sub.total > 0 || sub.upload + sub.download > 0);
+  }
+
+  private subHasExpiry(url: string): boolean {
+    const sub = this.subOf(url);
+    return sub !== undefined && sub.expire > 0;
+  }
+
+  private subTrafficText(url: string): ResourceStr {
+    const sub = this.subOf(url);
+    if (sub === undefined) {
+      return '';
+    }
+    const used = sub.upload + sub.download;
+    if (sub.total > 0) {
+      return $r('app.string.settings_sub_traffic', formatBytes(used), formatBytes(sub.total));
+    }
+    return used > 0 ? $r('app.string.sub_traffic_used', formatBytes(used)) : '';
+  }
+
+  private subExpireText(url: string): ResourceStr {
+    const sub = this.subOf(url);
+    if (sub === undefined || sub.expire <= 0) {
+      return '';
+    }
+    const d = new Date(sub.expire * 1000);
+    const pad = (v: number): string => v < 10 ? `0${v}` : `${v}`;
+    return $r('app.string.settings_sub_expire', `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`);
+  }
+
+  private subDaysLeft(url: string): number {
+    const sub = this.subOf(url);
+    if (sub === undefined || sub.expire <= 0) {
+      return 0;
+    }
+    return Math.max(0, Math.ceil((sub.expire * 1000 - Date.now()) / 86400000));
   }
 
   /** 订阅内排序:延迟升序(未测/失败的排最后),同延迟按节点名 */
@@ -2432,8 +2630,9 @@ struct Index {
 
   @Builder
   private accordionHeader(row: AccordionRow) {
-    Row({ space: 10 }) {
-      Column({ space: 3 }) {
+    Column({ space: 6 }) {
+      /* 标题行:名称 + 节点数靠左,更新/测速/折叠靠右,不再挤占下方信息栏宽度 */
+      Row({ space: 4 }) {
         Row({ space: 6 }) {
           Text(row.title)
             .fontSize(15)
@@ -2441,53 +2640,84 @@ struct Index {
             .fontColor($r('app.color.text_1'))
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .constraintSize({ maxWidth: '70%' })
+            .flexShrink(1)
           Text($r('app.string.group_node_count', row.count))
             .fontSize(11.5)
             .fontColor($r('app.color.text_3'))
+            .flexShrink(0)
         }
-        .width('100%')
+        .layoutWeight(1)
 
-        if (row.subtitle.length > 0) {
-          Text(row.subtitle)
-            .fontSize(10.5)
-            .fontColor($r('app.color.text_3'))
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .width('100%')
+        /* 单个订阅:更新 + 独立测速 */
+        if (row.key !== LOCAL_SECTION_KEY) {
+          Text(this.updatingSubUrl === row.sourceKey
+            ? $r('app.string.updating')
+            : $r('app.string.update_action'))
+            .fontSize(12.5)
+            .fontWeight(600)
+            .fontColor($r('app.color.text_2'))
+            .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+            .onClick(() => {
+              this.updateSubByUrl(row.sourceKey);
+            })
         }
-      }
-      .layoutWeight(1)
-      .alignItems(HorizontalAlign.Start)
 
-      /* 单个订阅:更新 + 独立测速 */
-      if (row.key !== LOCAL_SECTION_KEY) {
-        Text(this.updatingSubUrl === row.sourceKey
-          ? $r('app.string.updating')
-          : $r('app.string.update_action'))
+        Text(this.testing ? $r('app.string.speed_testing') : $r('app.string.speed_test'))
           .fontSize(12.5)
           .fontWeight(600)
-          .fontColor($r('app.color.text_2'))
-          .padding({ left: 6, right: 6, top: 6, bottom: 6 })
+          .fontColor($r('app.color.mono'))
+          .padding({ left: 8, right: 8, top: 4, bottom: 4 })
           .onClick(() => {
-            this.updateSubByUrl(row.sourceKey);
+            this.runSpeedTestFor(this.rowTargets(row));
           })
+
+        SymbolGlyph(this.isCollapsed(row.key) ? $r('sys.symbol.chevron_down') : $r('sys.symbol.chevron_up'))
+          .fontSize(16)
+          .fontColor([$r('app.color.text_3')])
+      }
+      .width('100%')
+
+      if (row.subtitle.length > 0) {
+        Text(row.subtitle)
+          .fontSize(10.5)
+          .fontColor($r('app.color.text_3'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
       }
 
-      Text(this.testing ? $r('app.string.speed_testing') : $r('app.string.speed_test'))
-        .fontSize(12.5)
-        .fontWeight(600)
-        .fontColor($r('app.color.mono'))
-        .padding({ left: 6, right: 6, top: 6, bottom: 6 })
-        .onClick(() => {
-          this.runSpeedTestFor(this.rowTargets(row));
-        })
-
-      SymbolGlyph(this.isCollapsed(row.key) ? $r('sys.symbol.chevron_down') : $r('sys.symbol.chevron_up'))
-        .fontSize(16)
-        .fontColor([$r('app.color.text_3')])
+      /* 订阅流量使用情况 + 到期时间(用户 2026-10-24 要求;数据来自响应头 subscription-userinfo) */
+      if (row.key !== LOCAL_SECTION_KEY && this.subHasMeta(row.sourceKey)) {
+        Row({ space: 10 }) {
+          if (this.subHasTraffic(row.sourceKey)) {
+            Text(this.subTrafficText(row.sourceKey))
+              .fontSize(10.5)
+              .fontWeight(600)
+              .fontColor($r('app.color.mono'))
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .flexShrink(1)
+          }
+          if (this.subHasExpiry(row.sourceKey)) {
+            Text(this.subExpireText(row.sourceKey))
+              .fontSize(10.5)
+              .fontColor($r('app.color.text_2'))
+              .maxLines(1)
+              .flexShrink(0)
+            if (this.subDaysLeft(row.sourceKey) > 0) {
+              Text($r('app.string.subscription_days_remaining', this.subDaysLeft(row.sourceKey)))
+                .fontSize(10.5)
+                .fontColor($r('app.color.text_3'))
+                .maxLines(1)
+                .flexShrink(0)
+            }
+          }
+        }
+        .width('100%')
+      }
     }
     .width('100%')
+    .alignItems(HorizontalAlign.Start)
     .padding({ left: 14, right: 12, top: 12, bottom: 12 })
     .backgroundColor($r('app.color.surface'))
     .borderRadius(14)
@@ -2498,6 +2728,7 @@ struct Index {
       } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
         this.litKey = '';
       }
+      this.refreshAccItem(row.key);
     })
     .onClick(() => {
       this.toggleCollapsed(row.key);
@@ -2525,7 +2756,7 @@ struct Index {
           .columnStart(0)
           .columnEnd(this.gridColumns - 1)
 
-          ForEach(this.accordionRows(), (row: AccordionRow) => {
+          LazyForEach(this.accSource, (row: AccordionRow) => {
             if (row.kind === 'header') {
               GridItem() {
                 this.accordionHeader(row)
@@ -2537,7 +2768,7 @@ struct Index {
                 this.gridNodeCard(row.profile)
               }
             }
-          }, (row: AccordionRow) => row.key)
+          }, (row: AccordionRow) => `${row.key}#${this.accRevision}`)
 
           /* 尾部占位:让最后一张卡能滑到悬浮胶囊上方,同时滚动时条目从胶囊后面滑出 */
           GridItem() {
@@ -2548,6 +2779,7 @@ struct Index {
           .columnStart(0)
           .columnEnd(this.gridColumns - 1)
         }
+        .cachedCount(6)
         .columnsTemplate(this.gridTemplate())
         .columnsGap(8)
         .rowsGap(8)
@@ -2565,7 +2797,7 @@ struct Index {
           }
           .selectable(false)
 
-          ForEach(this.accordionRows(), (row: AccordionRow) => {
+          LazyForEach(this.accSource, (row: AccordionRow) => {
             ListItem() {
               if (row.kind === 'header') {
                 this.accordionHeader(row)
@@ -2573,7 +2805,7 @@ struct Index {
                 this.nodeCard(row.profile)
               }
             }
-          }, (row: AccordionRow) => row.key)
+          }, (row: AccordionRow) => `${row.key}#${this.accRevision}`)
 
           /* 尾部占位:最后一张卡能滚到胶囊上方,滚动时条目从胶囊后面滑出 */
           ListItem() {
@@ -2583,6 +2815,7 @@ struct Index {
           }
           .selectable(false)
         }
+        .cachedCount(6)
         .edgeEffect(EdgeEffect.Spring)
         .scrollBar(BarState.Off)
         .layoutWeight(1)
@@ -2612,16 +2845,28 @@ struct Index {
       .width('100%')
       .layoutWeight(1)
       .id(`nbBodyProbe${tab}`)
-      /* 首页用实测让位;订阅页用列表占位项让位;设置页比实测再上提 10vp,与其它页观感对齐 */
-      .padding({ top: tab === 0 ? this.contentTopInset : (tab === 2 ? Math.max(0, this.contentTopInset - 10) : 0) })
+      /* 首页用实测让位;订阅页用列表占位项让位;设置首页/常规设置页改成和订阅页一样
+         直接从顶栏后面滚出来(沉浸光感),其余设置二级页保持原有让位 */
+      .padding({
+        top: tab === 0
+          ? this.contentTopInset
+          : (tab === 2 && (this.settingsSection === '' || this.settingsSection === 'general')
+            ? 0
+            : (tab === 2 ? Math.max(0, this.contentTopInset - 10) : 0))
+      })
       .onAreaChange((_oldArea: Area, _newArea: Area) => {
         this.calibrateTopInset();
       })
     }
     .width('100%')
     .height('100%')
-    /* 订阅页要让条目从底部胶囊后面滑出来 ⇒ 不在这里留白,改由列表尾部占位项让位 */
-    .padding({ bottom: tab === 2 ? TAB_BAR_CONTENT_HEIGHT + this.navBottomVp + 24 : 0 })
+    /* 订阅页/设置首页/常规设置页要让内容从底部胶囊后面滑出来 ⇒ 不在这里留白,
+       改由各页自己的尾部占位让位;其余设置二级页保持原有让位。 */
+    .padding({
+      bottom: tab === 2 && this.settingsSection !== '' && this.settingsSection !== 'general'
+        ? TAB_BAR_CONTENT_HEIGHT + this.navBottomVp + 24
+        : 0
+    })
   }
 
   /** 设置 Tab:二级分区页 + 入口首页 */
@@ -2630,6 +2875,13 @@ struct Index {
     if (this.settingsSection === 'general') {
       Column() {
         SettingsPage({
+          scroller: this.settingsPageScroller,
+          contentTopInset: this.contentTopInset,
+          bottomInset: TAB_BAR_CONTENT_HEIGHT + this.navBottomVp + 24,
+          saveTick: this.settingsSaveTick,
+          onDirtyChange: (dirty: boolean) => {
+            this.settingsDirty = dirty;
+          },
           onSettingsChanged: (settings: AppSettings) => {
             this.settings = settings;
           }
@@ -2701,8 +2953,11 @@ struct Index {
   /** 设置首页:把原抽屉里的配置/分组/路由/日志/工具/关于收敛成二级入口 */
   @Builder
   private settingsHub() {
-    Scroll() {
+    Scroll(this.settingsHubScroller) {
       Column({ space: 10 }) {
+        /* 顶部让位:列表内容从 HDS 顶栏后面滚出来,顶栏的滚动沉浸光感才有东西可模糊
+           (高度扣掉 Column 顶部 padding 4 与 space 10,首卡仍落在顶栏底边下方) */
+        Row().width('100%').height(Math.max(0, this.contentTopInset - 14))
         ForEach(SETTINGS_SECTION_IDS, (id: string, index: number) => {
           Row({ space: 14 }) {
             Row() {
@@ -2767,6 +3022,11 @@ struct Index {
           .width('100%')
           .textAlign(TextAlign.Center)
           .padding({ top: 10, bottom: 6 })
+
+        /* 尾部占位:最后一项能滑到悬浮胶囊上方,滚动时条目从胶囊后面滑出(底部沉浸光感) */
+        Row()
+          .width('100%')
+          .height(TAB_BAR_CONTENT_HEIGHT + this.navBottomVp + 24)
       }
       .width('100%')
       .padding({ left: 14, right: 14, top: 4 })
@@ -2927,8 +3187,8 @@ struct Index {
       .titleMode(HdsNavigationTitleMode.MINI)
       .mode(NavigationMode.Stack)
       .titleBar(this.shellTitleBar())
-      /* 顶栏渐变模糊要跟着列表滚 ⇒ 必须把列表的 Scroller 交给它(列表/块状各一个) */
-      .bindToScrollable([this.configScroller, this.gridScroller])
+      /* 顶栏渐变模糊要跟着列表滚 ⇒ 必须把列表的 Scroller 交给它(列表/块状/设置页各一个) */
+      .bindToScrollable([this.configScroller, this.gridScroller, this.settingsHubScroller, this.settingsPageScroller])
       /* 左上角 HDS 自带的返回箭头没用（本页是根页面，栈里没有上一级）⇒ 关掉 */
       .hideBackButton(true)
       .hideToolBar(true)

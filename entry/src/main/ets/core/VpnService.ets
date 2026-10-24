@@ -3,7 +3,7 @@ import Want from '@ohos.app.ability.Want';
 import common from '@ohos.app.ability.common';
 import backgroundTaskManager from '@ohos.resourceschedule.backgroundTaskManager';
 import wantAgent from '@ohos.app.ability.wantAgent';
-import { setPendingProfileId, clearPendingProfileId, LogStore } from '../model/Store';
+import { setPendingProfileId, clearPendingProfileId, setVpnDesired, LogStore } from '../model/Store';
 
 /**
  * UI 进程侧的 VPN 开关:只负责把请求转给 VpnExtensionAbility。
@@ -31,15 +31,13 @@ export class VpnService {
   private static generation: number = 0;
   private static evidenceWatchdog: number = -1;
   private static timeoutWatchdog: number = -1;
-  /** 长时任务(连续任务)状态。这是鸿蒙上唯一能让进程后台不被挂起的机制,
-   *  代价是系统会在通知栏挂一条托管通知(内容不可自定义、不能单独关闭,
-   *  用户删除通知即等于停止任务)。VPN 与后台订阅更新共用这一份任务。 */
+  /** 长时任务(连续任务)状态。当前只给「后台订阅更新」用 —— 那是真实的下载任务。
+   *  VPN 不再申请它:系统对 DATA_TRANSFER 有「10 分钟内必须更新实况窗进度」的校验,
+   *  空闲 VPN 会被暂停/取消;而 VPN 数据面跑在 :vpn 扩展进程里,不依赖这条任务。
+   *  注意:接入规范禁止在系统取消/暂停后立即重新申请,这里不再自动补申请。 */
   private static taskRunning: boolean = false;
   private static taskStarting: boolean = false;
   private static taskOwner: string = '';
-  /** 用户手动删除保活通知:本次连接内不再重新申请(接入规范禁止用户停止后立刻重申请) */
-  private static taskUserCancelled: boolean = false;
-  private static taskCancelAt: number = 0;
   private static taskCancelSubscribed: boolean = false;
 
   private static clearWatchdogs(): void {
@@ -53,8 +51,15 @@ export class VpnService {
     }
   }
 
-  /** 订阅长时任务取消事件(用户删除通知 / 系统回收)。幂等。 */
-  static subscribeContinuousTaskCancel(): void {
+  /**
+   * 订阅长时任务事件(取消 / 暂停 / 恢复),只做诊断和状态校正。幂等。
+   *
+   * 系统对 DATA_TRANSFER 会做业务一致性校验:第一次判定不达标时先 suspend
+   * (通知消失、应用退后台被挂起),持续不达标才 cancel。这两种都只影响
+   * 「后台订阅更新」这类任务;VPN 数据面在 :vpn 扩展进程里,不受影响。
+   * 另外接入规范禁止在系统取消/暂停后立即重新申请,所以这里不自动补申请。
+   */
+  static subscribeContinuousTaskEvents(): void {
     if (VpnService.taskCancelSubscribed) {
       return;
     }
@@ -64,40 +69,32 @@ export class VpnService {
         (info: backgroundTaskManager.ContinuousTaskCancelInfo) => {
           VpnService.taskRunning = false;
           VpnService.taskOwner = '';
-          const byUser: boolean =
-            info.reason === backgroundTaskManager.ContinuousTaskCancelReason.USER_CANCEL ||
-              info.reason === backgroundTaskManager.ContinuousTaskCancelReason.USER_CANCEL_REMOVE_NOTIFICATION;
-          if (byUser) {
-            VpnService.taskUserCancelled = true;
-            VpnService.taskCancelAt = Date.now();
-            LogStore.addLog('[app] 用户关闭了保活通知:本次连接不再申请长时任务');
-          } else {
-            LogStore.addLog(`[app] 长时任务被系统取消(reason=${info.reason})`);
-          }
+          LogStore.addLog(`[app] 长时任务被取消(reason=${info.reason}),系统通知已消失`);
+        });
+      backgroundTaskManager.on('continuousTaskSuspend',
+        (info: backgroundTaskManager.ContinuousTaskSuspendInfo) => {
+          VpnService.taskRunning = false;
+          VpnService.taskOwner = '';
+          LogStore.addLog(`[app] 长时任务被系统暂停(reason=${info.suspendReason}),通知消失;VPN 数据面不受影响`);
+        });
+      backgroundTaskManager.on('continuousTaskActive',
+        (info: backgroundTaskManager.ContinuousTaskActiveInfo) => {
+          VpnService.taskRunning = true;
+          LogStore.addLog('[app] 长时任务已恢复(回到前台自动激活)');
         });
     } catch (e) {
       VpnService.taskCancelSubscribed = false;
-      LogStore.addLog(`[app] 订阅长时任务取消事件失败: ${e}`);
+      LogStore.addLog(`[app] 订阅长时任务事件失败: ${e}`);
     }
   }
 
   /**
-   * 申请长时任务。owner:'vpn' = VPN 保活,'subs' = 后台订阅更新。
-   * 已有任务时不重复申请(共用一份,避免通知栏出现多条系统通知)。
+   * 申请长时任务。当前只给「后台订阅更新」使用(真实下载,符合 DATA_TRANSFER 场景)。
+   * 已有任务时不重复申请,避免通知栏出现多条系统通知。
    */
   static async acquireContinuousTask(context: common.UIAbilityContext, owner: string): Promise<void> {
     if (VpnService.taskRunning || VpnService.taskStarting) {
       return;
-    }
-    if (owner === 'vpn') {
-      /* 用户主动重新连接(比手动关闭通知更晚)时允许重新申请;自动拉起不算 */
-      const userConnectAt: number = AppStorage.get<number>('vpnUserConnectAt') ?? 0;
-      if (userConnectAt > VpnService.taskCancelAt) {
-        VpnService.taskUserCancelled = false;
-      }
-      if (VpnService.taskUserCancelled) {
-        return;
-      }
     }
     VpnService.taskStarting = true;
     try {
@@ -116,7 +113,7 @@ export class VpnService {
         agent);
       VpnService.taskRunning = true;
       VpnService.taskOwner = owner;
-      LogStore.addLog(`[app] 长时任务已开启(${owner === 'vpn' ? 'VPN 保活' : '后台任务'}),通知由系统托管`);
+      LogStore.addLog('[app] 后台下载长时任务已开启,通知由系统托管');
     } catch (e) {
       LogStore.addLog(`[app] 长时任务开启失败(${owner}): ${e}`);
     } finally {
@@ -147,16 +144,13 @@ export class VpnService {
   }
 
   /**
-   * @param userInitiated true = 用户在界面上主动连接(允许重新申请保活长时任务);
-   *                      false = 看门狗自动拉起(不得在用户删掉保活通知后立刻重申请)。
+   * @param userInitiated true = 用户在界面上主动连接(会持久化“期望连接”标记);
+   *                      false = 看门狗自动拉起 / 启动自检恢复(不改标记)。
    */
   static async connect(context: common.UIAbilityContext, profileId: string,
     forceRestart: boolean = false, userInitiated: boolean = true): Promise<void> {
     const generation = ++VpnService.generation;
     VpnService.clearWatchdogs();
-    if (userInitiated) {
-      AppStorage.setOrCreate('vpnUserConnectAt', Date.now());
-    }
     AppStorage.setOrCreate('vpnUpSpeed', 0);
     AppStorage.setOrCreate('vpnDownSpeed', 0);
     AppStorage.setOrCreate('vpnTotalUp', 0);
@@ -170,6 +164,10 @@ export class VpnService {
       }
     await setPendingProfileId(profileId);
     AppStorage.setOrCreate('vpnStatus', 'connecting');
+    if (userInitiated) {
+      /* 记录用户意图:应用被系统回收后重新打开时据此自动恢复连接 */
+      await setVpnDesired(true);
+    }
     try {
       await vpnExtension.startVpnExtensionAbility(wantFor(context, profileId, forceRestart));
       LogStore.addLog('[app] startVpnExtensionAbility 已调用,等待扩展回调…');
@@ -235,9 +233,8 @@ export class VpnService {
         // Continue with teardown even if startup failed.
       }
     AppStorage.setOrCreate('vpnStatus', 'disconnecting');
-    /* 通知与保活任务分开管理:用户关 VPN 就立即释放长时任务,
-       系统那条保活通知随之消失,不再等扩展的 onDisconnect(它可能已被回收)。 */
-    await VpnService.releaseContinuousTask(context);
+    /* 用户主动断开:清掉“期望连接”标记,下次启动不再自动恢复 */
+    await setVpnDesired(false);
     try {
       await vpnExtension.stopVpnExtensionAbility(wantFor(context));
     } catch (e) {
