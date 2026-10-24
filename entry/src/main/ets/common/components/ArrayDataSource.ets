@@ -46,6 +46,19 @@ export class ArrayDataSource<T> implements IDataSource {
     this.notify((l) => l.onDataReloaded());
   }
 
+  /** 查索引(内容随状态变化时,只通知这一项重绘) */
+  indexOf(predicate: (item: T) => boolean): number {
+    return this.items.findIndex(predicate);
+  }
+
+  /** 只通知某一项变化(LazyForEach 下父组件状态变化不会自动重建 item) */
+  notifyItemChanged(index: number): void {
+    if (index < 0 || index >= this.items.length) {
+      return;
+    }
+    this.notify((l) => l.onDataChange(index));
+  }
+
   /** 追加一行(日志场景,只通知新行,不重建整表) */
   push(item: T): void {
     this.items.push(item);

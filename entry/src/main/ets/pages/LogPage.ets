@@ -8,11 +8,14 @@ import { LogStore, LOG_EVENT_ID } from '../model/Store';
 import { CoreManager } from '../core/CoreManager';
 import { setClipboardText } from '../utils/ClipboardHelper';
 import { pressLightEffect } from '../common/Effects';
+import { ArrayDataSource } from '../common/components/ArrayDataSource';
 
 /** 日志面板(抽屉内嵌页签,对齐安卓 LogcatFragment;跟随全局主题保持与其他页面一致) */
 @Component
 export struct LogPanel {
-  @State lines: Array<string> = [];
+  private lines: Array<string> = [];
+  /** LazyForEach 数据源:只创建可视区行,追加/过滤都走增量通知 */
+  private source: ArrayDataSource<string> = new ArrayDataSource<string>();
   @State searchText: string = '';
   @State levelFilter: string = 'ALL';
   /** HDS 点按光效:记录"当前被按下的那一个"的 key,松手/取消即清空(按下那一刻才亮) */
@@ -24,6 +27,7 @@ export struct LogPanel {
 
   aboutToAppear(): void {
     this.lines = LogStore.getLines().slice();
+    this.applyFilter();
     const event: emitter.InnerEvent = { eventId: LOG_EVENT_ID };
     emitter.on(event, (data: emitter.EventData) => {
       const payload = data.data as Record<string, Object>;
@@ -48,23 +52,32 @@ export struct LogPanel {
   }
 
   private appendLine(line: string): void {
-    const next = this.lines.slice();
-    next.push(line);
-    if (next.length > 2000) {
-      next.splice(0, next.length - 2000);
+    this.lines.push(line);
+    /* 攒到 2500 再一次性裁到 2000:避免每追加一行就复制/重排整表 */
+    if (this.lines.length > 2500) {
+      this.lines = this.lines.slice(-2000);
+      this.applyFilter();
+    } else if (this.matches(line)) {
+      this.source.push(line);
     }
-    this.lines = next;
     this.scroller.scrollEdge(Edge.Bottom);
   }
 
-  private filteredLines(): Array<string> {
+  private matches(line: string): boolean {
+    if (this.levelFilter !== 'ALL' && !line.toUpperCase().includes(this.levelFilter)) {
+      return false;
+    }
     const keyword = this.searchText.trim().toLowerCase();
-    return this.lines.filter((line: string) => {
-      const upper = line.toUpperCase();
-      const levelMatches = this.levelFilter === 'ALL' || upper.includes(this.levelFilter);
-      const keywordMatches = keyword.length === 0 || line.toLowerCase().includes(keyword);
-      return levelMatches && keywordMatches;
-    });
+    return keyword.length === 0 || line.toLowerCase().includes(keyword);
+  }
+
+  private filteredLines(): Array<string> {
+    return this.lines.filter((line: string) => this.matches(line));
+  }
+
+  /** 过滤条件变化时整体重载(只在用户输入/切级别时发生) */
+  private applyFilter(): void {
+    this.source.reset(this.filteredLines());
   }
 
   private async exportLogs(): Promise<void> {
@@ -164,6 +177,7 @@ export struct LogPanel {
         .onClick(() => {
           LogStore.clear();
           this.lines = [];
+          this.source.clear();
           this.fileOffset = 0;
         })
       }
@@ -174,7 +188,10 @@ export struct LogPanel {
         .placeholderColor($r('app.color.text_secondary'))
         .backgroundColor($r('app.color.surface'))
         .margin({ left: 12, right: 12, bottom: 8 })
-        .onChange((value: string) => { this.searchText = value; })
+        .onChange((value: string) => {
+          this.searchText = value;
+          this.applyFilter();
+        })
 
       Row({ space: 8 }) {
         ForEach(['ALL', 'ERROR', 'WARN', 'INFO', 'DEBUG'], (level: string) => {
@@ -190,14 +207,17 @@ export struct LogPanel {
                 this.litKey = '';
               }
             })
-            .onClick(() => { this.levelFilter = level; })
+            .onClick(() => {
+              this.levelFilter = level;
+              this.applyFilter();
+            })
         })
       }
       .width('100%')
       .padding({ left: 12, right: 12, bottom: 8 })
 
       List({ scroller: this.scroller, space: 2 }) {
-        ForEach(this.filteredLines(), (line: string, idx: number) => {
+        LazyForEach(this.source, (line: string) => {
           ListItem() {
             Text(line)
               .fontSize(11)
@@ -210,6 +230,7 @@ export struct LogPanel {
           }
         }, (line: string, idx: number) => `${idx}_${line}`)
       }
+        .cachedCount(10)
         .edgeEffect(EdgeEffect.Spring)
       .layoutWeight(1)
       .width('100%')

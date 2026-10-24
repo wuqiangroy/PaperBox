@@ -267,6 +267,20 @@ function stableProfileId(p: Profile, url: string): string {
   return `sub_${(hash >>> 0).toString(16)}`;
 }
 
+/**
+ * 订阅更新时节点对象会被整体重建(新 id 相同但字段全新)。把「属于这个节点身份」的
+ * 运行时数据从旧对象搬到新对象上,否则一次自动更新就会让用户的测速结果、置顶、
+ * 累计流量和手动排序全部消失。
+ */
+function carryOverRuntime(next: Profile, previous: Profile): void {
+  next.latencyMs = previous.latencyMs;
+  next.latencyTestedAt = previous.latencyTestedAt;
+  next.pinned = previous.pinned;
+  next.rx = previous.rx;
+  next.tx = previous.tx;
+  next.sortOrder = previous.sortOrder;
+}
+
 function isIpAddress(host: string): boolean {
   if (host.length === 0) {
     return true;
@@ -455,7 +469,7 @@ async function doUpdateSubscription(url: string): Promise<SubUpdateResult> {
   if (subForGroup !== undefined && subForGroup.forceResolve) {
     await applyForceResolve(parsed);
   }
-  const profiles = existing;
+  const profiles = await loadProfiles();
   // 一订阅一分组:新节点自动归入订阅对应分组(优先订阅分组名,其次订阅名,再次域名)
   let groupName = subNameOf(url);
   if (subForGroup !== undefined) {
@@ -473,6 +487,14 @@ async function doUpdateSubscription(url: string): Promise<SubUpdateResult> {
   const selectedIdentity = selectedProfile !== undefined && selectedProfile.subUrl === url
     ? profileIdentity(selectedProfile, url) : '';
   let migratedSelectedId = '';
+  /* 订阅更新会重建节点对象:按节点 id 记住旧对象,把与身份绑定的运行时数据
+     (测速结果/置顶/累计流量/手动序号)带过去,否则每次自动更新都会清空用户的测速与布局。 */
+  const previousById: Map<string, Profile> = new Map<string, Profile>();
+  for (const p of profiles) {
+    if (p.subUrl === url) {
+      previousById.set(p.id, p);
+    }
+  }
 
   const kept: Array<Profile> = [];
   let removed = 0;
@@ -502,6 +524,10 @@ async function doUpdateSubscription(url: string): Promise<SubUpdateResult> {
     p.id = stableProfileId(p, url);
     if (kept.some((item: Profile) => item.id === p.id)) {
       p.id = `${p.id}_${added}`;
+    }
+    const previous = previousById.get(stableProfileId(p, url));
+    if (previous !== undefined) {
+      carryOverRuntime(p, previous);
     }
     p.updatedAt = Date.now();
     kept.push(p);

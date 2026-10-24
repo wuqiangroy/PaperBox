@@ -11,8 +11,19 @@ export interface TrafficTotals {
   down: number;
 }
 
+/** 复用同一个 HTTP 客户端:此前每次轮询都 create/destroy,1Hz 下对象抖动明显。
+ *  进程内只保留一份,请求失败也不重建(连接器会自动恢复)。 */
+let trafficClient: http.HttpRequest | null = null;
+
+function sharedTrafficClient(): http.HttpRequest {
+  if (trafficClient === null) {
+    trafficClient = http.createHttp();
+  }
+  return trafficClient;
+}
+
 export async function fetchTrafficTotals(port: number, secret: string): Promise<TrafficTotals | null> {
-  const client = http.createHttp();
+  const client = sharedTrafficClient();
   try {
     const resp = await client.request(`http://127.0.0.1:${port}/connections`, {
       method: http.RequestMethod.GET,
@@ -34,8 +45,6 @@ export async function fetchTrafficTotals(port: number, secret: string): Promise<
     return t;
   } catch (e) {
     return null;
-  } finally {
-    client.destroy();
   }
 }
 

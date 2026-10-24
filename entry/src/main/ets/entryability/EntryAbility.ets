@@ -37,6 +37,11 @@ export default class EntryAbility extends UIAbility {
   /** 自动拉起 VPN 的节流与熔断:最近一次时间 / 连续次数 */
   private vpnRestartAt: number = 0;
   private vpnRestartCount: number = 0;
+  /** 看门狗启动时刻:UI 进程重建后可能一次心跳都没收到(vpnHeartbeatAt=0),
+   *  需要以启动时刻为基准兜底判定扩展失联。 */
+  private watchdogStartedAt: number = 0;
+  /** 回前台存活探测计时器(冻结恢复后不必再等满 20s) */
+  private resumeProbeTimer: number = -1;
   private mainWindow?: window.Window;
   /** 当前生效的深浅色判定结果(由 applyAppearance / onConfigurationUpdate 写入,供窗口/系统栏改色使用) */
   private darkTheme: boolean = false;
@@ -69,22 +74,56 @@ export default class EntryAbility extends UIAbility {
     if (this.vpnWatchdog >= 0) {
       return;
     }
+    this.watchdogStartedAt = Date.now();
     this.vpnWatchdog = setInterval(() => {
-      if (this.vpnHeartbeatAt <= 0 || Date.now() - this.vpnHeartbeatAt < 20000) {
+      const running: boolean = AppStorage.get<boolean>('vpnRunning') ?? false;
+      if (!running) {
         return;
       }
-      LogStore.addLog('[app] 20s 未收到 VPN 心跳,判定扩展已被回收:复位连接状态');
-      this.vpnHeartbeatAt = 0;
-      this.stopVpnWatchdog();
-      AppStorage.setOrCreate('vpnRunning', false);
-      AppStorage.setOrCreate('vpnStatus', 'disconnected');
-      AppStorage.setOrCreate('vpnUpSpeed', 0);
-      AppStorage.setOrCreate('vpnDownSpeed', 0);
-      /* 扩展被回收,保活任务已没有意义,先释放(否则通知栏会一直挂着) */
-      void VpnService.releaseContinuousTask(this.context, 'vpn');
-      /* VPN 被系统杀掉:由软件自动重新拉起(用户 2026-10-23 要求) */
-      void this.autoRestartVpn();
+      if (this.vpnHeartbeatAt <= 0) {
+        /* UI 进程重建后还没收到过任何心跳:给 20s 宽限,仍然没有就按失联处理 */
+        if (this.watchdogStartedAt > 0 && Date.now() - this.watchdogStartedAt >= 20000) {
+          this.handleVpnLost('[app] 20s 内未收到任何 VPN 心跳,判定扩展已失联:复位连接状态并自动重连');
+        }
+        return;
+      }
+      if (Date.now() - this.vpnHeartbeatAt < 20000) {
+        return;
+      }
+      this.handleVpnLost('[app] 20s 未收到 VPN 心跳,判定扩展已被回收:复位连接状态并自动重连');
     }, 5000);
+  }
+
+  /** VPN 扩展失联:复位 UI 状态并自动重新拉起。 */
+  private handleVpnLost(reason: string): void {
+    LogStore.addLog(reason);
+    this.vpnHeartbeatAt = 0;
+    this.stopVpnWatchdog();
+    AppStorage.setOrCreate('vpnRunning', false);
+    AppStorage.setOrCreate('vpnStatus', 'disconnected');
+    AppStorage.setOrCreate('vpnUpSpeed', 0);
+    AppStorage.setOrCreate('vpnDownSpeed', 0);
+    /* VPN 被系统杀掉:由软件自动重新拉起(用户 2026-10-23 要求) */
+    void this.autoRestartVpn();
+  }
+
+  /**
+   * 回到前台后的快速存活探测:后台冻结期间心跳必然中断,给 12s 宽限;
+   * 恢复后仍收不到心跳就立即重连,不必再等看门狗满 20s(用户 2026-10-24)。
+   */
+  private scheduleResumeProbe(): void {
+    if (this.resumeProbeTimer >= 0) {
+      clearTimeout(this.resumeProbeTimer);
+    }
+    const mark = Date.now();
+    this.resumeProbeTimer = setTimeout(() => {
+      this.resumeProbeTimer = -1;
+      const running: boolean = AppStorage.get<boolean>('vpnRunning') ?? false;
+      if (!running || this.vpnHeartbeatAt > mark) {
+        return;
+      }
+      this.handleVpnLost('[app] 回到前台 12s 仍未收到 VPN 心跳:复位连接状态并自动重连');
+    }, 12000);
   }
 
   /** 自动重新拉起 VPN。30s 冷却避免被杀循环时反复抢占;连续 5 次失败后停止,交给用户手动重连。 */
@@ -116,6 +155,7 @@ export default class EntryAbility extends UIAbility {
       clearInterval(this.vpnWatchdog);
       this.vpnWatchdog = -1;
     }
+    this.watchdogStartedAt = 0;
   }
 
   private async updateDueSubscriptionsInBackground(): Promise<void> {
@@ -285,23 +325,16 @@ export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     LogStore.addLog('[app] PaperBox 启动');
     this.handleAction(want);
-    // 长时任务被用户/系统取消时复位内部状态
-    VpnService.subscribeContinuousTaskCancel();
+    // 长时任务被系统取消/暂停时记录原因(仅用于诊断,不再自动补申请)
+    VpnService.subscribeContinuousTaskEvents();
     this.applyAppearance();
     /* ⚠️ 智感握姿**不在这里**启动:它要走 motion 系统服务(含一次同步调用),
        放在 onCreate 会占住启动关键路径(服务异常时表现为卡在开屏页)。
        改到首页 `Index.aboutToAppear` 里启动,见 common/Handedness.ets 的注释。 */
     this.updateDueSubscriptionsInBackground();
-    // 请求通知权限(常驻通知用),用户拒绝也不影响功能
-    try {
-      notificationManager.requestEnableNotification(this.context, (err: BusinessError) => {
-        if (err && err.code !== 0) {
-          LogStore.addLog(`[app] 通知权限未授予: ${err.code}`);
-        }
-      });
-    } catch (e) {
-      // ignore
-    }
+    /* 通知权限申请不在这里:requestEnableNotification 要求 UI 已加载(loadContent 成功)之后
+       才能调用,否则必然失败(实测返回 1600001),表现为首次启动看不到授权弹窗、
+       连接后扩展进程 publish 常驻通知被拒。见 onWindowStageCreate。 */
     // 接收 :vpn 扩展进程发来的日志与状态
     subscribeVpnEvents((line: string) => {
       LogStore.appendRemote(line);
@@ -314,12 +347,8 @@ export default class EntryAbility extends UIAbility {
         /* 连上了 ⇒ 之前的自动拉起算成功,计数清零 */
         this.vpnRestartCount = 0;
         this.startVpnWatchdog();
-        /* 开启保活长时任务(系统会挂一条托管通知);用户主动连接才允许重申请 */
-        void VpnService.acquireContinuousTask(this.context, 'vpn');
       } else {
         this.stopVpnWatchdog();
-        /* 关闭 VPN:释放长时任务,系统那条保活通知随之消失 */
-        void VpnService.releaseContinuousTask(this.context, 'vpn');
       }
     }, (upSpeed: number, downSpeed: number, totalUp: number, totalDown: number) => {
       /* 流量事件同样证明扩展活着(Clash API 关闭时不会走这里,靠 5s 状态心跳兜底) */
@@ -349,11 +378,35 @@ export default class EntryAbility extends UIAbility {
     this.handleAction(want);
   }
 
+  /**
+   * 通知权限:已开启直接跳过;未开启则弹系统授权框(只有 UI 加载完成后调用才会生效)。
+   * 用户此前拒绝过时系统不会再弹,只能去「设置→通知和状态栏」手动开启,这里只记录日志。
+   */
+  private ensureNotificationPermission(): void {
+    try {
+      if (notificationManager.isNotificationEnabledSync()) {
+        return;
+      }
+      notificationManager.requestEnableNotification(this.context, (err: BusinessError) => {
+        if (err && err.code !== 0) {
+          LogStore.addLog(`[app] 通知权限未授予(${err.code}):VPN 常驻通知不会显示,可在系统设置中开启`);
+          return;
+        }
+        LogStore.addLog('[app] 通知权限已授予');
+      });
+    } catch (e) {
+      LogStore.addLog(`[app] 通知权限申请异常: ${e}`);
+    }
+  }
+
   onWindowStageCreate(windowStage: window.WindowStage): void {
     windowStage.loadContent('pages/Index', (err) => {
       if (err.code) {
         return;
       }
+      /* 通知授权必须在 UI 加载完成之后申请(官方约束),提前到 onCreate 会直接返回
+         1600001 且不弹窗 —— 这正是「VPN 连上后通知栏没有常驻通知」的根因。 */
+      this.ensureNotificationPermission();
       windowStage.getMainWindow().then((win: window.Window) => {
         this.mainWindow = win;
         // ★ 窗口级 layout-full-screen：列表/内容才能真正钻进状态栏与手势条（用户要求"内容延伸进状态栏"）。
@@ -396,6 +449,10 @@ export default class EntryAbility extends UIAbility {
   onDestroy(): void {
     unsubscribeVpnEvents();
     this.stopVpnWatchdog();
+    if (this.resumeProbeTimer >= 0) {
+      clearTimeout(this.resumeProbeTimer);
+      this.resumeProbeTimer = -1;
+    }
   }
 
   onForeground(): void {
@@ -403,10 +460,15 @@ export default class EntryAbility extends UIAbility {
     this.updateDueSubscriptionsInBackground();
     /* 回到前台时若 VPN 仍在运行,恢复看门狗并给心跳一次宽限:
        休眠/系统冻结期间定时器与跨进程事件都会暂停,
-       不先重置的话刚回前台就会被误判成「扩展已回收」。 */
+       不先重置的话刚回前台就会被误判成「扩展已回收」。
+       但若失联时间已经很长(后台被冻结 / 扩展被系统回收),12s 内收不到心跳就立即重连。 */
     if (AppStorage.get<boolean>('vpnRunning') ?? false) {
+      const staleBefore = this.vpnHeartbeatAt;
       this.vpnHeartbeatAt = Date.now();
       this.startVpnWatchdog();
+      if (staleBefore <= 0 || Date.now() - staleBefore > 15000) {
+        this.scheduleResumeProbe();
+      }
     }
     // 通知 VPN 扩展:应用回到前台(扩展据此执行「唤醒后重置连接」,对齐安卓 wakeResetConnections)
     publishAppForeground();

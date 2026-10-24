@@ -1198,7 +1198,7 @@
     },
     {
       "name": "settings_geo_import_hint",
-      "value": "从文件导入 geoip.db / geosite.db(覆盖内置 cn 库)"
+      "value": "从文件导入 geoip.db / geosite.db"
     },
     {
       "name": "settings_geo_site",
@@ -2499,6 +2499,34 @@
     {
       "name": "sub_url_count",
       "value": "共 %1$d 个订阅"
+    },
+    {
+      "name": "settings_general_desc",
+      "value": "启动连接、测速与日志等基础选项"
+    },
+    {
+      "name": "settings_route_desc",
+      "value": "分流规则、IPv6、嗅探与 Geo 资源"
+    },
+    {
+      "name": "settings_dns_desc",
+      "value": "远程/直连 DNS 与 FakeDNS"
+    },
+    {
+      "name": "settings_inbound_desc",
+      "value": "混合代理端口与局域网访问"
+    },
+    {
+      "name": "settings_appearance_desc",
+      "value": "主题、排序、震动与重连策略"
+    },
+    {
+      "name": "settings_api_desc",
+      "value": "Clash API 端口与密钥"
+    },
+    {
+      "name": "settings_per_app_desc",
+      "value": "按应用选择代理范围"
     }
   ]
 }

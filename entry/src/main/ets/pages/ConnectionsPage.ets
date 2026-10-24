@@ -7,6 +7,7 @@ import { pressLightEffect } from '../common/Effects';
 import { formatBytes, formatSpeed } from '../utils/TrafficStats';
 import { AppSettings } from '../model/Profile';
 import { initStore, loadSettings } from '../model/Store';
+import { ArrayDataSource } from '../common/components/ArrayDataSource';
 
 interface ConnItem {
   id: string;
@@ -24,27 +25,41 @@ interface ConnectionsResponse {
   connections: Array<Record<string, Object>>;
 }
 
-async function apiCall(settings: AppSettings, method: string, path: string): Promise<string> {
-  const client = http.createHttp();
-  try {
-    const headers: Record<string, string> = {};
-    if (settings.clashApiSecret.length > 0) {
-      headers['Authorization'] = `Bearer ${settings.clashApiSecret}`;
+/** 复用 HTTP 客户端:连接页 1Hz 轮询,避免每秒 create/destroy。
+ *  GET(轮询)和 DELETE(手动断开连接)分开两个实例,避免并发复用同一个请求对象。 */
+let pollClient: http.HttpRequest | null = null;
+let actionClient: http.HttpRequest | null = null;
+
+function sharedApiClient(isDelete: boolean): http.HttpRequest {
+  if (isDelete) {
+    if (actionClient === null) {
+      actionClient = http.createHttp();
     }
-    const resp = await client.request(`http://127.0.0.1:${settings.clashApiPort}${path}`, {
-      method: method === 'DELETE' ? http.RequestMethod.DELETE : http.RequestMethod.GET,
-      header: headers,
-      connectTimeout: 1500,
-      readTimeout: 1500,
-      expectDataType: http.HttpDataType.STRING
-    });
-    if (resp.responseCode < 200 || resp.responseCode >= 300) {
-      throw new Error(`HTTP ${resp.responseCode}`);
-    }
-    return `${resp.result}`;
-  } finally {
-    client.destroy();
+    return actionClient;
   }
+  if (pollClient === null) {
+    pollClient = http.createHttp();
+  }
+  return pollClient;
+}
+
+async function apiCall(settings: AppSettings, method: string, path: string): Promise<string> {
+  const client = sharedApiClient(method === 'DELETE');
+  const headers: Record<string, string> = {};
+  if (settings.clashApiSecret.length > 0) {
+    headers['Authorization'] = `Bearer ${settings.clashApiSecret}`;
+  }
+  const resp = await client.request(`http://127.0.0.1:${settings.clashApiPort}${path}`, {
+    method: method === 'DELETE' ? http.RequestMethod.DELETE : http.RequestMethod.GET,
+    header: headers,
+    connectTimeout: 1500,
+    readTimeout: 1500,
+    expectDataType: http.HttpDataType.STRING
+  });
+  if (resp.responseCode < 200 || resp.responseCode >= 300) {
+    throw new Error(`HTTP ${resp.responseCode}`);
+  }
+  return `${resp.result}`;
 }
 
 function parseConnections(raw: string): Array<ConnItem> {
@@ -77,7 +92,8 @@ function parseConnections(raw: string): Array<ConnItem> {
 @Entry
 @Component
 struct ConnectionsPage {
-  @State conns: Array<ConnItem> = [];
+  private source: ArrayDataSource<ConnItem> = new ArrayDataSource<ConnItem>();
+  @State connCount: number = 0;
   @State lastError: ResourceStr = '';
   @State loading: boolean = true;
   @State uploadTotal: number = 0;
@@ -95,6 +111,10 @@ struct ConnectionsPage {
   private timer: number = -1;
   private lastUpload: number = 0;
   private lastDownload: number = 0;
+  /** 防重入:接口慢于 1s 时不能叠加并发请求 */
+  private refreshing: boolean = false;
+  /** 每次刷新 +1 并参与 key:连接流量每秒都在变,同 key 的 RELOAD 不保证刷新内容 */
+  private refreshRevision: number = 0;
 
   async aboutToAppear(): Promise<void> {
     await initStore(getContext(this) as common.UIAbilityContext);
@@ -114,7 +134,7 @@ struct ConnectionsPage {
     this.stopPolling();
     if (!this.isRunning || !this.settings.clashApiEnabled) {
       this.loading = false;
-      this.conns = [];
+      this.resetList();
       return;
     }
     this.loading = true;
@@ -130,9 +150,10 @@ struct ConnectionsPage {
   }
 
   async refresh(): Promise<void> {
-    if (!this.isRunning || !this.settings.clashApiEnabled) {
+    if (!this.isRunning || !this.settings.clashApiEnabled || this.refreshing) {
       return;
     }
+    this.refreshing = true;
     try {
       const raw = await apiCall(this.settings, 'GET', '/connections');
       const response = JSON.parse(raw) as ConnectionsResponse;
@@ -144,7 +165,10 @@ struct ConnectionsPage {
       this.lastDownload = download;
       this.uploadTotal = upload;
       this.downloadTotal = download;
-      this.conns = parseConnections(raw);
+      const list = parseConnections(raw);
+      this.refreshRevision++;
+      this.source.reset(list);
+      this.connCount = list.length;
       this.lastError = '';
     } catch (e) {
       this.lastError = $r('app.string.connections_api_unavailable');
@@ -154,7 +178,20 @@ struct ConnectionsPage {
       this.downloadTotal = this.fallbackTotalDown;
     } finally {
       this.loading = false;
+      this.refreshing = false;
     }
+  }
+
+  private resetList(): void {
+    if (this.connCount !== 0) {
+      this.connCount = 0;
+    }
+    this.source.clear();
+  }
+
+  /** 点按光效:只让被按的那一行重绘,不整表刷新 */
+  private refreshRow(item: ConnItem): void {
+    this.source.notifyItemChanged(this.source.indexOf((c: ConnItem) => c.id === item.id));
   }
 
   async closeConn(item: ConnItem): Promise<void> {
@@ -184,7 +221,7 @@ struct ConnectionsPage {
         this.litKey = '';
       } })
         .onClick(() => { router.back(); })
-        Text($r('app.string.connections_title_count', this.conns.length)).fontSize(18).fontWeight(FontWeight.Bold).layoutWeight(1)
+        Text($r('app.string.connections_title_count', this.connCount)).fontSize(18).fontWeight(FontWeight.Bold).layoutWeight(1)
         Button({ type: ButtonType.Normal, stateEffect: false }) {
           Text($r('app.string.refresh')).fontSize(14).fontColor($r('app.color.primary'))
         }
@@ -244,7 +281,7 @@ struct ConnectionsPage {
         }
         .width('100%')
         .padding({ top: 28, bottom: 20 })
-      } else if (this.conns.length === 0) {
+      } else if (this.connCount === 0) {
         Column({ space: 8 }) {
           Text($r('app.string.connections_empty'))
             .fontSize(16)
@@ -259,7 +296,7 @@ struct ConnectionsPage {
       }
 
       List({ space: 6 }) {
-        ForEach(this.conns, (c: ConnItem) => {
+        LazyForEach(this.source, (c: ConnItem) => {
           ListItem() {
             Column({ space: 2 }) {
               Row() {
@@ -295,6 +332,7 @@ struct ConnectionsPage {
                   } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
                     this.litKey = '';
                   }
+                  this.refreshRow(c);
                 })
                 .onClick(() => this.closeConn(c))
               }.width('100%')
@@ -305,8 +343,9 @@ struct ConnectionsPage {
             .borderRadius(UiSpec.CARD_RADIUS)
             .backgroundColor($r('app.color.surface'))
           }
-        }, (c: ConnItem) => c.id)
+        }, (c: ConnItem) => `${c.id}#${this.refreshRevision}`)
       }
+        .cachedCount(8)
         .edgeEffect(EdgeEffect.Spring)
       .layoutWeight(1)
       .width('100%')

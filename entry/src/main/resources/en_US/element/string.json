@@ -1198,7 +1198,7 @@
     },
     {
       "name": "settings_geo_import_hint",
-      "value": "Import geoip.db / geosite.db from a file (overrides built-in cn databases)"
+      "value": "Import geoip.db / geosite.db from file"
     },
     {
       "name": "settings_geo_site",
@@ -2499,6 +2499,34 @@
     {
       "name": "sub_url_count",
       "value": "%1$d subscriptions"
+    },
+    {
+      "name": "settings_general_desc",
+      "value": "Startup, speed test and logging"
+    },
+    {
+      "name": "settings_route_desc",
+      "value": "Routing rules, IPv6, sniffing and Geo assets"
+    },
+    {
+      "name": "settings_dns_desc",
+      "value": "Remote/direct DNS and FakeDNS"
+    },
+    {
+      "name": "settings_inbound_desc",
+      "value": "Mixed proxy port and LAN access"
+    },
+    {
+      "name": "settings_appearance_desc",
+      "value": "Theme, sorting, haptics and reconnect policy"
+    },
+    {
+      "name": "settings_api_desc",
+      "value": "Clash API port and secret"
+    },
+    {
+      "name": "settings_per_app_desc",
+      "value": "Choose proxy scope per app"
     }
   ]
 }
