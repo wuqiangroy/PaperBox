@@ -4,8 +4,7 @@ import connection from '@ohos.net.connection';
 import common from '@ohos.app.ability.common';
 import fs from '@ohos.file.fs';
 import commonEventManager from '@ohos.commonEventManager';
-import notificationManager from '@ohos.notificationManager';
-import wantAgent from '@ohos.app.ability.wantAgent';
+import http from '@ohos.net.http';
 import BusinessError from '@ohos.base';
 import { Profile, AppSettings } from '../model/Profile';
 import { initStore, loadProfiles, loadGroups, loadSettings, getPendingProfileId, setPendingProfileId, clearPendingProfileId, getRunningProfileId, setRunningProfileId, mutateProfiles, LogStore } from '../model/Store';
@@ -28,11 +27,13 @@ import { fetchTrafficTotals } from '../utils/TrafficStats';
  */
 
 const VPN_TUN_IFNAME = 'vpn-tun';
-const BUNDLE_NAME = 'com.paperbox.harmonyos';
-/** 常驻通知 ID:只在真正的 VPN 连接存续期间存在,不承担保活职责。
- *  它与系统长时任务通知无关 —— 长时任务的 DATA_TRANSFER 会因空闲被系统撤销,
- *  普通通知不会。 */
-const VPN_NOTIFICATION_ID: number = 1001;
+/** 长时任务保活探测地址:优先百度 robots(支持 Range,返回正好 1KB),失败轮换到兜底地址。
+ *  这些地址只用来产生真实字节,响应内容直接丢弃,不落盘。 */
+const KEEP_ALIVE_URLS: Array<string> = [
+  'http://www.baidu.com/robots.txt',
+  'http://connectivitycheck.platform.hicloud.com/generate_204',
+  'http://www.msftconnecttest.com/connecttest.txt'
+];
 
 function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -84,8 +85,13 @@ export default class VpnExtAbility extends VpnExtensionAbility {
   /** 心跳定时器:每 5s 重播一次「已连接」状态。扩展被系统回收时没有任何回调,
    *  UI 端只能靠"收不到心跳"判定 VPN 已死并复位界面状态。 */
   private heartbeatTimer: number = -1;
-  /** 常驻通知发布失败计数:连续失败(通知权限被关)后本次会话不再尝试 */
-  private notificationFailStreak: number = 0;
+  /** DATA_TRANSFER 长时任务的业务凭证:每 5 分钟拉 1KB 真实字节,满足系统一致性校验。
+   *  跑在扩展进程(已 protectProcessNet),走物理网卡而不是隧道,节点挂了也能完成。 */
+  private keepAliveTimer: number = -1;
+  private keepAliveClient: http.HttpRequest | null = null;
+  private keepAliveUrlIndex: number = 0;
+  private keepAliveInFlight: boolean = false;
+  private keepAliveLogged: boolean = false;
   // 网络变化重置连接(功能对齐安卓 networkChangeResetConnections,2.0.2 起默认关)
   private netConnection: connection.NetConnection | null = null;
   private netChangeGeneration: number = 0;
@@ -337,7 +343,7 @@ export default class VpnExtAbility extends VpnExtensionAbility {
   private async doTeardown(silent: boolean): Promise<void> {
     this.stopHeartbeat();
     this.stopTrafficReporter();
-    this.cancelNotification();
+    this.stopKeepAliveHeartbeat();
     try {
       // 内核长时间闲置后可能无响应,stopCore 回调若永不触发会卡死 starting,
       // 导致之后所有启动请求被队列吞掉——这里必须带超时兜底。
@@ -609,7 +615,7 @@ export default class VpnExtAbility extends VpnExtensionAbility {
     await setRunningProfileId(pendingId);
     this.startTrafficReporter();
     this.startHeartbeat();
-    await this.showConnectedNotification(node.name);
+    this.startKeepAliveHeartbeat();
     publishVpnStatus(`connected:${node.name}`, true, pendingId);
     await clearPendingProfileId();
   }
@@ -633,62 +639,67 @@ export default class VpnExtAbility extends VpnExtensionAbility {
   }
 
   /**
-   * 常驻通知:只随真实连接存在,用于展示状态并提供「断开」入口。
-   * 不承担保活职责 —— 系统长时任务的 DATA_TRANSFER 通知会因空闲被撤销,
-   * 而这条普通通知不会,也不会触发系统的业务一致性校验。
-   * 归属静默槽位(CONTENT_INFORMATION):不占状态栏图标、不弹横幅。
+   * DATA_TRANSFER 长时任务的业务凭证。
+   *
+   * 系统会校验 DATA_TRANSFER 任务是否真的在传数据,空闲约 10 分钟就暂停/撤销任务
+   * (通知随之消失、进程失去后台豁免)。所以每 5 分钟拉 1KB 真实字节:
+   *   - 百度 robots.txt 支持 Range: bytes=0-1023,返回 206 + 正好 1024 字节;
+   *   - 响应直接丢弃,不落盘;
+   *   - 跑在扩展进程里(已在启动时调用 protectProcessNet),socket 走物理网卡,
+   *     不经过 VPN 隧道,节点不可用时心跳仍然成立。
+   * 失败就轮换到兜底地址,连续失败也不会主动停(任务交给系统判定)。
    */
-  private async showConnectedNotification(nodeName: string): Promise<void> {
-    if (this.notificationFailStreak >= 5) {
-      return; // 连续发布失败(通知权限被拒):本次会话不再尝试,不影响 VPN
+  private startKeepAliveHeartbeat(): void {
+    this.stopKeepAliveHeartbeat();
+    this.keepAliveLogged = false;
+    this.keepAliveUrlIndex = 0;
+    this.keepAliveTick();
+    this.keepAliveTimer = setInterval(() => {
+      this.keepAliveTick();
+    }, 5 * 60 * 1000);
+  }
+
+  private stopKeepAliveHeartbeat(): void {
+    if (this.keepAliveTimer >= 0) {
+      clearInterval(this.keepAliveTimer);
+      this.keepAliveTimer = -1;
     }
-    try {
-      const res = this.context.resourceManager;
-      const disconnectAgent = await wantAgent.getWantAgent({
-        wants: [{
-          bundleName: BUNDLE_NAME,
-          abilityName: 'EntryAbility',
-          parameters: { 'action': 'disconnect' }
-        }],
-        actionType: wantAgent.OperationType.START_ABILITY,
-        requestCode: 1002,
-        actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
-      });
-      const request: notificationManager.NotificationRequest = {
-        id: VPN_NOTIFICATION_ID,
-        // 点通知/按钮后不要自动消失,交给断开流程统一 cancel
-        tapDismissed: false,
-        notificationSlotType: notificationManager.SlotType.CONTENT_INFORMATION,
-        content: {
-          notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
-          normal: {
-            title: res.getStringSync($r('app.string.notification_vpn_connected')),
-            text: nodeName
-          }
-        },
-        actionButtons: [{
-          title: res.getStringSync($r('app.string.notification_disconnect')),
-          wantAgent: disconnectAgent
-        }]
-      };
-      await notificationManager.publish(request);
-      this.notificationFailStreak = 0;
-      LogStore.addLog('[vpn] 常驻通知已发布');
-    } catch (e) {
-      this.notificationFailStreak++;
-      if (this.notificationFailStreak === 1 || this.notificationFailStreak === 5) {
-        LogStore.addLog(`[vpn] 常驻通知发布失败(第 ${this.notificationFailStreak} 次): ${e}`);
-      }
+    if (this.keepAliveClient !== null) {
+      this.keepAliveClient.destroy();
+      this.keepAliveClient = null;
     }
   }
 
-  private cancelNotification(): void {
+  private async keepAliveTick(): Promise<void> {
+    if (this.keepAliveInFlight || !this.started) {
+      return;
+    }
+    this.keepAliveInFlight = true;
+    const url = KEEP_ALIVE_URLS[this.keepAliveUrlIndex % KEEP_ALIVE_URLS.length];
     try {
-      notificationManager.cancel(VPN_NOTIFICATION_ID).catch((e: BusinessError) => {
-        // 通知不存在时忽略
+      if (this.keepAliveClient === null) {
+        this.keepAliveClient = http.createHttp();
+      }
+      const resp = await this.keepAliveClient.request(url, {
+        method: http.RequestMethod.GET,
+        header: { 'Range': 'bytes=0-1023' },
+        connectTimeout: 8000,
+        readTimeout: 10000,
+        expectDataType: http.HttpDataType.ARRAY_BUFFER
       });
+      if (resp.responseCode < 200 || resp.responseCode >= 400) {
+        throw new Error(`HTTP ${resp.responseCode}`);
+      }
+      this.keepAliveUrlIndex = 0;
+      if (!this.keepAliveLogged) {
+        this.keepAliveLogged = true;
+        LogStore.addLog(`[vpn] 长时任务保活请求成功(${url})`);
+      }
     } catch (e) {
-      // ignore
+      this.keepAliveUrlIndex = (this.keepAliveUrlIndex + 1) % KEEP_ALIVE_URLS.length;
+      LogStore.addLog(`[vpn] 长时任务保活请求失败,切换地址: ${e}`);
+    } finally {
+      this.keepAliveInFlight = false;
     }
   }
 

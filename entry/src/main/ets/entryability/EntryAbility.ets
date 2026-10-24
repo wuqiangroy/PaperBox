@@ -37,6 +37,8 @@ export default class EntryAbility extends UIAbility {
   /** 自动拉起 VPN 的节流与熔断:最近一次时间 / 连续次数 */
   private vpnRestartAt: number = 0;
   private vpnRestartCount: number = 0;
+  /** VPN 长时任务下一次允许重新申请的时间(冷却 60s,避免被系统取消后高频补申请) */
+  private vpnTaskRetryAt: number = 0;
   /** 看门狗启动时刻:UI 进程重建后可能一次心跳都没收到(vpnHeartbeatAt=0),
    *  需要以启动时刻为基准兜底判定扩展失联。 */
   private watchdogStartedAt: number = 0;
@@ -103,8 +105,32 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate('vpnStatus', 'disconnected');
     AppStorage.setOrCreate('vpnUpSpeed', 0);
     AppStorage.setOrCreate('vpnDownSpeed', 0);
+    void this.syncVpnContinuousTask(false);
     /* VPN 被系统杀掉:由软件自动重新拉起(用户 2026-10-23 要求) */
     void this.autoRestartVpn();
+  }
+
+  /**
+   * 用 DATA_TRANSFER 长时任务给 VPN 上「后台豁免」:系统通知由系统托管(清不掉),
+   * 进程在后台不会被冻结/优先回收。业务凭证由扩展进程每 5 分钟拉 1KB 真实流量提供
+   * (见 VpnExtAbility.startKeepAliveHeartbeat)。
+   * 被系统暂停/取消后按 60s 冷却重试,避免高频补申请。
+   */
+  private async syncVpnContinuousTask(running: boolean): Promise<void> {
+    if (!running) {
+      this.vpnTaskRetryAt = 0;
+      await VpnService.releaseContinuousTask(this.context, 'vpn');
+      return;
+    }
+    if (VpnService.isContinuousTaskRunning()) {
+      return;
+    }
+    const now = Date.now();
+    if (now < this.vpnTaskRetryAt) {
+      return;
+    }
+    this.vpnTaskRetryAt = now + 60000;
+    await VpnService.acquireContinuousTask(this.context, 'vpn');
   }
 
   /**
@@ -325,7 +351,7 @@ export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     LogStore.addLog('[app] PaperBox 启动');
     this.handleAction(want);
-    // 长时任务被系统取消/暂停时记录原因(仅用于诊断,不再自动补申请)
+    // 长时任务被系统取消/暂停时校正状态;VPN 仍在连接则由状态心跳按冷却重新申请
     VpnService.subscribeContinuousTaskEvents();
     this.applyAppearance();
     /* ⚠️ 智感握姿**不在这里**启动:它要走 motion 系统服务(含一次同步调用),
@@ -347,8 +373,15 @@ export default class EntryAbility extends UIAbility {
         /* 连上了 ⇒ 之前的自动拉起算成功,计数清零 */
         this.vpnRestartCount = 0;
         this.startVpnWatchdog();
+        void this.syncVpnContinuousTask(true);
       } else {
         this.stopVpnWatchdog();
+        /* 只在终态释放:切换节点/重连的中间态(false)不能让通知忽隐忽现 */
+        const terminal = status === 'disconnected'
+          || status.startsWith('connect_failed') || status.startsWith('start_failed');
+        if (terminal) {
+          void this.syncVpnContinuousTask(false);
+        }
       }
     }, (upSpeed: number, downSpeed: number, totalUp: number, totalDown: number) => {
       /* 流量事件同样证明扩展活着(Clash API 关闭时不会走这里,靠 5s 状态心跳兜底) */

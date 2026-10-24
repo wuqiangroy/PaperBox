@@ -31,10 +31,11 @@ export class VpnService {
   private static generation: number = 0;
   private static evidenceWatchdog: number = -1;
   private static timeoutWatchdog: number = -1;
-  /** 长时任务(连续任务)状态。当前只给「后台订阅更新」用 —— 那是真实的下载任务。
-   *  VPN 不再申请它:系统对 DATA_TRANSFER 有「10 分钟内必须更新实况窗进度」的校验,
-   *  空闲 VPN 会被暂停/取消;而 VPN 数据面跑在 :vpn 扩展进程里,不依赖这条任务。
-   *  注意:接入规范禁止在系统取消/暂停后立即重新申请,这里不再自动补申请。 */
+  /** 长时任务(连续任务)状态。两个使用者共用一个任务槽位:
+   *  - 'vpn' :VPN 连接期间由 UI 进程持有,给进程后台豁免,系统通知清不掉;
+   *            业务凭证由扩展进程每 5 分钟拉 1KB 真实流量提供。
+   *  - 'subs':后台订阅更新期间临时持有(真实下载)。
+   *  先申请者持有;release 按 owner 校验,不会误放别人的任务。 */
   private static taskRunning: boolean = false;
   private static taskStarting: boolean = false;
   private static taskOwner: string = '';
@@ -52,12 +53,12 @@ export class VpnService {
   }
 
   /**
-   * 订阅长时任务事件(取消 / 暂停 / 恢复),只做诊断和状态校正。幂等。
+   * 订阅长时任务事件(取消 / 暂停 / 恢复),做状态校正与诊断。幂等。
    *
-   * 系统对 DATA_TRANSFER 会做业务一致性校验:第一次判定不达标时先 suspend
-   * (通知消失、应用退后台被挂起),持续不达标才 cancel。这两种都只影响
-   * 「后台订阅更新」这类任务;VPN 数据面在 :vpn 扩展进程里,不受影响。
-   * 另外接入规范禁止在系统取消/暂停后立即重新申请,所以这里不自动补申请。
+   * 系统对 DATA_TRANSFER 会做业务一致性校验:判定不达标时先 suspend
+   * (通知消失、应用退后台被挂起),持续不达标才 cancel。
+   * 校正后由 EntryAbility 的 VPN 状态心跳触发重新申请(60s 冷却),
+   * 避免高频补申请被系统拒绝。
    */
   static subscribeContinuousTaskEvents(): void {
     if (VpnService.taskCancelSubscribed) {
@@ -89,7 +90,7 @@ export class VpnService {
   }
 
   /**
-   * 申请长时任务。当前只给「后台订阅更新」使用(真实下载,符合 DATA_TRANSFER 场景)。
+   * 申请长时任务(DATA_TRANSFER)。使用者:VPN('vpn')与后台订阅更新('subs')。
    * 已有任务时不重复申请,避免通知栏出现多条系统通知。
    */
   static async acquireContinuousTask(context: common.UIAbilityContext, owner: string): Promise<void> {
