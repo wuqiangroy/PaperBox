@@ -67,6 +67,10 @@ export struct SettingsPage {
    * —— 官方明确"点光源位置不跟组件位移变化,不建议在滚动组件里常亮"。
    */
   @State litKey: string = '';
+  /** 顶部让位(vp):由壳层实测的 HDS 顶栏底边传入,列表顶部占位与订阅页一致 */
+  @Prop contentTopInset: number = 90;
+  /** 滚动器由壳层传入并交给 HdsNavigation.bindToScrollable:滚动时顶栏才有沉浸光感 */
+  scroller: Scroller = new Scroller();
   private context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
   onSettingsChanged: (settings: AppSettings) => void = (_settings: AppSettings) => {};
 
@@ -422,70 +426,71 @@ export struct SettingsPage {
   }
 
   build() {
-    Column() {
-      Row() {
-        /* 标题与抽屉入口都在壳层的 HDS 顶栏里;这里只保留本页自己的动作(保存) */
-        Blank()
-          .layoutWeight(1)
-        Button($r('app.string.save'))
-          .height(34)
-          .enabled(this.dirty)
-          .backgroundColor(this.dirty ? $r('app.color.primary') : $r('app.color.control_disabled'))
-          .fontColor($r('app.color.surface'))
-          /* HDS 点按光效:页头固定件(不跟滚动跑位) ⇒ 发光 + 按压阴影 + 兜底缩放 */
-          .visualEffect(pressLightEffect(this.litKey === 'save', true))
-          .scale({ x: this.litKey === 'save' ? 0.94 : 1.0, y: this.litKey === 'save' ? 0.94 : 1.0 })
-          .onTouch((event: TouchEvent) => {
-            if (event.type === TouchType.Down) {
-        this.litKey = 'save';
-      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-        this.litKey = '';
-      }
-          })
-          .onClick(() => this.save())
-      }
-      .width('100%')
-      .padding({ left: UiSpec.PAGE_PADDING, right: UiSpec.PAGE_PADDING, top: 6, bottom: 8 })
-      if (this.loading) {
-        Column({ space: 10 }) {
-          LoadingProgress()
-            .width(32)
-            .height(32)
-            .color($r('app.color.primary'))
-          Text($r('app.string.loading_settings'))
-            .fontSize(13)
-            .fontColor($r('app.color.text_secondary'))
-        }
-        .width('100%')
-        .padding({ top: 36, bottom: 20 })
-      } else if (this.loadError.length > 0) {
-        Column({ space: 8 }) {
-          Text($r('app.string.settings_load_failed'))
-            .fontSize(16)
-            .fontWeight(500)
-            .fontColor($r('app.color.text_primary'))
-          Text(this.loadError)
-            .fontSize(13)
-            .fontColor($r('app.color.error'))
-          Button($r('app.string.reload'))
-            .height(36)
-            .backgroundColor($r('app.color.primary'))
-            .visualEffect(pressLightEffect(this.litKey === 'reload', true))
+    Scroll(this.scroller) {
+      Column({ space: 14 }) {
+        /* 顶部让位:内容从 HDS 顶栏后面滚出来 —— 与订阅页同一套滚动沉浸光感。
+           (高度扣掉 Column 的 space,首项仍落在顶栏底边下方) */
+        Row().width('100%').height(Math.max(0, this.contentTopInset - 14))
+        Row() {
+          /* 标题与抽屉入口都在壳层的 HDS 顶栏里;这里只保留本页自己的动作(保存) */
+          Blank()
+            .layoutWeight(1)
+          Button($r('app.string.save'))
+            .height(34)
+            .enabled(this.dirty)
+            .backgroundColor(this.dirty ? $r('app.color.primary') : $r('app.color.control_disabled'))
+            .fontColor($r('app.color.surface'))
+            /* HDS 点按光效:页头固定件(不跟滚动跑位) ⇒ 发光 + 按压阴影 + 兜底缩放 */
+            .visualEffect(pressLightEffect(this.litKey === 'save', true))
+            .scale({ x: this.litKey === 'save' ? 0.94 : 1.0, y: this.litKey === 'save' ? 0.94 : 1.0 })
             .onTouch((event: TouchEvent) => {
               if (event.type === TouchType.Down) {
-        this.litKey = 'reload';
-      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-        this.litKey = '';
-      }
+          this.litKey = 'save';
+        } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+          this.litKey = '';
+        }
             })
-            .onClick(() => this.load())
+            .onClick(() => this.save())
         }
         .width('100%')
-        .padding({ top: 28, bottom: 20 })
-      }
-
-      Scroll() {
-        Column({ space: 14 }) {
+        .padding({ left: UiSpec.PAGE_PADDING, right: UiSpec.PAGE_PADDING, top: 2, bottom: 2 })
+        if (this.loading) {
+          Column({ space: 10 }) {
+            LoadingProgress()
+              .width(32)
+              .height(32)
+              .color($r('app.color.primary'))
+            Text($r('app.string.loading_settings'))
+              .fontSize(13)
+              .fontColor($r('app.color.text_secondary'))
+          }
+          .width('100%')
+          .padding({ top: 36, bottom: 20 })
+        } else if (this.loadError.length > 0) {
+          Column({ space: 8 }) {
+            Text($r('app.string.settings_load_failed'))
+              .fontSize(16)
+              .fontWeight(500)
+              .fontColor($r('app.color.text_primary'))
+            Text(this.loadError)
+              .fontSize(13)
+              .fontColor($r('app.color.error'))
+            Button($r('app.string.reload'))
+              .height(36)
+              .backgroundColor($r('app.color.primary'))
+              .visualEffect(pressLightEffect(this.litKey === 'reload', true))
+              .onTouch((event: TouchEvent) => {
+                if (event.type === TouchType.Down) {
+          this.litKey = 'reload';
+        } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+          this.litKey = '';
+        }
+              })
+              .onClick(() => this.load())
+          }
+          .width('100%')
+          .padding({ top: 28, bottom: 20 })
+        }
           // 常规(对齐 Android General 组)
           this.sectionHeader($r('sys.symbol.gearshape'), $r('app.string.settings_general'), this.generalExpanded, () => { this.generalExpanded = !this.generalExpanded; })
           if (this.generalExpanded) {
@@ -1257,13 +1262,12 @@ export struct SettingsPage {
 
         }
         .width('100%')
-        .padding({ left: UiSpec.PAGE_PADDING, right: UiSpec.PAGE_PADDING, top: 12, bottom: 12 })
+        .padding({ left: UiSpec.PAGE_PADDING, right: UiSpec.PAGE_PADDING, top: 0, bottom: 12 })
       }
-        .edgeEffect(EdgeEffect.Spring)
-      .layoutWeight(1)
+      .scrollBar(BarState.Off)
+      .edgeEffect(EdgeEffect.Spring)
+      .width('100%')
+      .height('100%')
       .align(Alignment.Top)
-    }
-    .width('100%')
-    .height('100%')
   }
 }

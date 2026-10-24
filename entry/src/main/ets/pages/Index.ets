@@ -33,7 +33,7 @@ import { RouteRulesPanel } from './RouteRulesPage';
 import { LogPanel } from './LogPage';
 
 import { Profile, ProfileGroup, AppSettings, profileTypeLabel } from '../model/Profile';
-import { initStore, loadProfiles, saveProfiles, loadGroups, loadSettings, saveSettings, readPrefString, writePrefString, ensureGroupByName, LogStore } from '../model/Store';
+import { initStore, loadProfiles, saveProfiles, mutateProfiles, loadGroups, loadSettings, saveSettings, readPrefString, writePrefString, ensureGroupByName, LogStore } from '../model/Store';
 import { VpnService } from '../core/VpnService';
 import { parseShareText } from '../utils/LinkParser';
 import { getClipboardText, setClipboardText } from '../utils/ClipboardHelper';
@@ -92,6 +92,9 @@ const SETTINGS_SECTION_SYMBOLS: Array<Resource> = [
 const OVERFLOW_MENU_ANCHOR: string = 'nbOverflowAnchor';
 /** 订阅页"本地/未分组"分区的 key */
 const LOCAL_SECTION_KEY: string = 'local';
+/** 节点视图(列表/块状)与订阅折叠状态的持久化键:重启后保持用户改过的布局 */
+const PREF_NODE_VIEW_MODE: string = 'node_view_mode';
+const PREF_COLLAPSED_KEYS: string = 'collapsed_keys';
 
 /** 订阅页折叠列表的行模型:kind = header(订阅标题) / node(节点卡) */
 class AccordionRow {
@@ -141,10 +144,15 @@ struct Index {
   @State memMb: number = 0;
   /** 当前被按下的元素 key(底部 Tab / 节点卡 / 模式按钮 / FAB):"按下才亮"靠它逐颗判断 */
   @State litKey: string = '';
+  /** 布局偏好只从存储加载一次:避免刷新与写入并发时把刚切换的视图/折叠状态读回旧值 */
+  private layoutPrefLoaded: boolean = false;
   /** 配置页列表的滚动器(列表滚动位置复位 / 分组切换后回到顶部都靠它) */
   private configScroller: Scroller = new Scroller();
   /** 块状视图的滚动器(同一个 Scroller 不能同时绑 List 和 Grid) */
   private gridScroller: Scroller = new Scroller();
+  /** 设置首页与常规设置页的滚动器:交给 HDS 标题栏 ⇒ 与订阅页同一套滚动沉浸光感 */
+  private settingsHubScroller: Scroller = new Scroller();
+  private settingsPageScroller: Scroller = new Scroller();
   /** 内存占用轮询定时器(首页仪表盘) */
   private memTimer: number = -1;
   /** 顶栏 ⋮ 的沉浸光感菜单(照 RzdSchool HdsMenu:openMenu + 自绘面板 + 模糊背板 + 自适应取色) */
@@ -352,6 +360,22 @@ struct Index {
         this.selectedId = savedNodeId;
       } else if (this.selectedId.length === 0 && this.profiles.length > 0) {
         this.selectedId = this.profiles[0].id;
+      }
+      /* 节点布局(列表/块状)与订阅折叠状态也持久化:退出重进不能回到默认布局 */
+      if (!this.layoutPrefLoaded) {
+        this.layoutPrefLoaded = true;
+        const savedViewMode = await readPrefString(PREF_NODE_VIEW_MODE, '');
+        this.nodeViewMode = savedViewMode === 'grid' ? 'grid' : 'list';
+        const savedCollapsed = await readPrefString(PREF_COLLAPSED_KEYS, '');
+        if (savedCollapsed.length === 0) {
+          this.collapsedKeys = [];
+        } else {
+          try {
+            this.collapsedKeys = JSON.parse(savedCollapsed) as Array<string>;
+          } catch (e) {
+            this.collapsedKeys = [];
+          }
+        }
       }
       /* 分组分类条:分组/节点变化后校正选中项(被删/被合并时回落到第一个) */
       this.ensureSelectedGroup();
@@ -636,6 +660,8 @@ struct Index {
        把主页整页重渲染 N 次,节点多时 UI 线程被刷爆 —— 表现为"测速中页面卡死、
        点搜索/点按钮都没反应"。结果先进缓冲,每 300ms 合并刷一次,测完补最后一次。 */
     let pending: Record<string, number> = {};
+    /** 本次测速的最终结果(按节点 id):结束后按 id 合并回存储,避免整表覆盖并发的订阅更新 */
+    const results: Record<string, number> = {};
     let flushTimer = -1;
     const flushPending = (): void => {
       if (flushTimer >= 0) {
@@ -658,6 +684,7 @@ struct Index {
     };
     const onOne = (id: string, ms: number): void => {
       pending[id] = ms;
+      results[id] = ms;
       const profile = this.profiles.find((item: Profile) => item.id === id);
       if (profile !== undefined) {
         profile.latencyMs = ms;
@@ -686,12 +713,33 @@ struct Index {
         }
       }
       flushPending();
-      await saveProfiles(this.profiles);
+      await this.persistLatencyResults(results);
       this.profiles = this.profiles.slice();
       promptAction.showToast({ message: $r('app.string.speed_test_complete') });
     } finally {
       flushPending();
       this.testing = false;
+    }
+  }
+
+  /** 把测速结果按节点 id 合并写回存储(读最新列表再改,避免覆盖并发写入的其它字段)。 */
+  private async persistLatencyResults(results: Record<string, number>): Promise<void> {
+    if (Object.keys(results).length === 0) {
+      return;
+    }
+    const testedAt = Date.now();
+    try {
+      await mutateProfiles((list: Array<Profile>): Array<Profile> => {
+        for (const p of list) {
+          if (results[p.id] !== undefined) {
+            p.latencyMs = results[p.id];
+            p.latencyTestedAt = testedAt;
+          }
+        }
+        return list;
+      });
+    } catch (e) {
+      LogStore.addLog(`[ui] 测速结果保存失败: ${e}`);
     }
   }
 
@@ -2108,6 +2156,7 @@ struct Index {
           iconColor: $r('app.color.text_1'),
           onTap: () => {
             this.nodeViewMode = this.nodeViewMode === 'grid' ? 'list' : 'grid';
+            void writePrefString(PREF_NODE_VIEW_MODE, this.nodeViewMode);
           }
         })
       }
@@ -2356,6 +2405,57 @@ struct Index {
       next.push(key);
     }
     this.collapsedKeys = next;
+    void writePrefString(PREF_COLLAPSED_KEYS, JSON.stringify(next));
+  }
+
+  /** 订阅页标题行:按订阅 URL 取流量/到期信息(来自响应头 subscription-userinfo) */
+  private subOf(url: string): SubInfo | undefined {
+    return this.subscriptions.find((s: SubInfo) => s.url === url);
+  }
+
+  private subHasMeta(url: string): boolean {
+    const sub = this.subOf(url);
+    return sub !== undefined && (sub.total > 0 || sub.upload + sub.download > 0 || sub.expire > 0);
+  }
+
+  private subHasTraffic(url: string): boolean {
+    const sub = this.subOf(url);
+    return sub !== undefined && (sub.total > 0 || sub.upload + sub.download > 0);
+  }
+
+  private subHasExpiry(url: string): boolean {
+    const sub = this.subOf(url);
+    return sub !== undefined && sub.expire > 0;
+  }
+
+  private subTrafficText(url: string): ResourceStr {
+    const sub = this.subOf(url);
+    if (sub === undefined) {
+      return '';
+    }
+    const used = sub.upload + sub.download;
+    if (sub.total > 0) {
+      return $r('app.string.settings_sub_traffic', formatBytes(used), formatBytes(sub.total));
+    }
+    return used > 0 ? $r('app.string.sub_traffic_used', formatBytes(used)) : '';
+  }
+
+  private subExpireText(url: string): ResourceStr {
+    const sub = this.subOf(url);
+    if (sub === undefined || sub.expire <= 0) {
+      return '';
+    }
+    const d = new Date(sub.expire * 1000);
+    const pad = (v: number): string => v < 10 ? `0${v}` : `${v}`;
+    return $r('app.string.settings_sub_expire', `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`);
+  }
+
+  private subDaysLeft(url: string): number {
+    const sub = this.subOf(url);
+    if (sub === undefined || sub.expire <= 0) {
+      return 0;
+    }
+    return Math.max(0, Math.ceil((sub.expire * 1000 - Date.now()) / 86400000));
   }
 
   /** 订阅内排序:延迟升序(未测/失败的排最后),同延迟按节点名 */
@@ -2455,6 +2555,34 @@ struct Index {
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .width('100%')
+        }
+
+        /* 订阅流量使用情况 + 到期时间(用户 2026-10-24 要求;数据来自响应头 subscription-userinfo) */
+        if (row.key !== LOCAL_SECTION_KEY && this.subHasMeta(row.sourceKey)) {
+          Row({ space: 10 }) {
+            if (this.subHasTraffic(row.sourceKey)) {
+              Text(this.subTrafficText(row.sourceKey))
+                .fontSize(10.5)
+                .fontWeight(600)
+                .fontColor($r('app.color.mono'))
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+                .layoutWeight(1)
+            }
+            if (this.subHasExpiry(row.sourceKey)) {
+              Text(this.subExpireText(row.sourceKey))
+                .fontSize(10.5)
+                .fontColor($r('app.color.text_2'))
+                .maxLines(1)
+              if (this.subDaysLeft(row.sourceKey) > 0) {
+                Text($r('app.string.subscription_days_remaining', this.subDaysLeft(row.sourceKey)))
+                  .fontSize(10.5)
+                  .fontColor($r('app.color.text_3'))
+                  .maxLines(1)
+              }
+            }
+          }
+          .width('100%')
         }
       }
       .layoutWeight(1)
@@ -2612,8 +2740,15 @@ struct Index {
       .width('100%')
       .layoutWeight(1)
       .id(`nbBodyProbe${tab}`)
-      /* 首页用实测让位;订阅页用列表占位项让位;设置页比实测再上提 10vp,与其它页观感对齐 */
-      .padding({ top: tab === 0 ? this.contentTopInset : (tab === 2 ? Math.max(0, this.contentTopInset - 10) : 0) })
+      /* 首页用实测让位;订阅页用列表占位项让位;设置首页/常规设置页改成和订阅页一样
+         直接从顶栏后面滚出来(沉浸光感),其余设置二级页保持原有让位 */
+      .padding({
+        top: tab === 0
+          ? this.contentTopInset
+          : (tab === 2 && (this.settingsSection === '' || this.settingsSection === 'general')
+            ? 0
+            : (tab === 2 ? Math.max(0, this.contentTopInset - 10) : 0))
+      })
       .onAreaChange((_oldArea: Area, _newArea: Area) => {
         this.calibrateTopInset();
       })
@@ -2630,6 +2765,8 @@ struct Index {
     if (this.settingsSection === 'general') {
       Column() {
         SettingsPage({
+          scroller: this.settingsPageScroller,
+          contentTopInset: this.contentTopInset,
           onSettingsChanged: (settings: AppSettings) => {
             this.settings = settings;
           }
@@ -2701,8 +2838,11 @@ struct Index {
   /** 设置首页:把原抽屉里的配置/分组/路由/日志/工具/关于收敛成二级入口 */
   @Builder
   private settingsHub() {
-    Scroll() {
+    Scroll(this.settingsHubScroller) {
       Column({ space: 10 }) {
+        /* 顶部让位:列表内容从 HDS 顶栏后面滚出来,顶栏的滚动沉浸光感才有东西可模糊
+           (高度扣掉 Column 顶部 padding 4 与 space 10,首卡仍落在顶栏底边下方) */
+        Row().width('100%').height(Math.max(0, this.contentTopInset - 14))
         ForEach(SETTINGS_SECTION_IDS, (id: string, index: number) => {
           Row({ space: 14 }) {
             Row() {
@@ -2927,8 +3067,8 @@ struct Index {
       .titleMode(HdsNavigationTitleMode.MINI)
       .mode(NavigationMode.Stack)
       .titleBar(this.shellTitleBar())
-      /* 顶栏渐变模糊要跟着列表滚 ⇒ 必须把列表的 Scroller 交给它(列表/块状各一个) */
-      .bindToScrollable([this.configScroller, this.gridScroller])
+      /* 顶栏渐变模糊要跟着列表滚 ⇒ 必须把列表的 Scroller 交给它(列表/块状/设置页各一个) */
+      .bindToScrollable([this.configScroller, this.gridScroller, this.settingsHubScroller, this.settingsPageScroller])
       /* 左上角 HDS 自带的返回箭头没用（本页是根页面，栈里没有上一级）⇒ 关掉 */
       .hideBackButton(true)
       .hideToolBar(true)
