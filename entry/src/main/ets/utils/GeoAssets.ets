@@ -4,8 +4,8 @@ import picker from '@ohos.file.picker';
 import common from '@ohos.app.ability.common';
 
 /**
- * GeoIP/GeoSite 数据管理:下载 sing-geosite/sing-geoip 的 cn 分类库到应用沙箱,
- * 规则模式下自动启用 geosite:cn / geoip:cn 直连分流。
+ * GeoIP/GeoSite 数据管理:内置库随 HAP 分发(rawfile/geo),首次启动播种到沙箱;
+ * 用户可手动检查更新(全量下载比对)或导入自定义 .srs。
  */
 
 // 上游 sing-geosite/sing-geoip 的 `rule-set` 分支只发布 .srs 二进制格式,
@@ -13,6 +13,15 @@ import common from '@ohos.app.ability.common';
 // 按扩展名推断格式,.srs -> binary,与 buildGeoRuleSet 的 format:'binary' 一致。
 export const GEO_SITE_FILE = 'geosite-cn.srs';
 export const GEO_IP_FILE = 'geoip-cn.srs';
+
+// HAP 内置库(约 90KB):首次启动复制到沙箱,规则模式开箱即用。
+const RAW_SITE_FILE = 'geo/geosite-cn.srs';
+const RAW_IP_FILE = 'geo/geoip-cn.srs';
+// 版本标记:内置 = 'bundled',用户更新后写更新日期。
+const VERSION_BUNDLED = 'bundled';
+// 用户主动删除后留下的标记:不再自动播种,直到用户点「恢复内置库」或重新下载/导入。
+const MARKER_DELETED_SITE = '.user-deleted-site';
+const MARKER_DELETED_IP = '.user-deleted-ip';
 
 // .srs 真实体积:geosite-cn 约 56KB、geoip-cn 约 34KB,远低于旧 .db 的门槛,
 //大小校验改为「魔数 + 合理下限」,下限 4KB 足以挡住 404/错误页文本。
@@ -52,6 +61,25 @@ export function geoIpPath(context: common.Context): string {
   return `${geoDir(context)}/${GEO_IP_FILE}`;
 }
 
+function assetPath(context: common.Context, kind: string): string {
+  return kind === 'site' ? geoSitePath(context) : geoIpPath(context);
+}
+
+function versionPath(context: common.Context, kind: string): string {
+  return `${geoDir(context)}/${kind === 'site' ? 'geosite-cn' : 'geoip-cn'}.version.txt`;
+}
+
+function deletedMarkerPath(context: common.Context, kind: string): string {
+  return `${geoDir(context)}/${kind === 'site' ? MARKER_DELETED_SITE : MARKER_DELETED_IP}`;
+}
+
+function ensureGeoDir(context: common.Context): void {
+  const dir = geoDir(context);
+  if (!fs.accessSync(dir)) {
+    fs.mkdirSync(dir, true);
+  }
+}
+
 /** 校验已落盘的 .srs:存在、够大、且带 sing-box 二进制魔数(挡掉 jsdelivr 的 200+错误页文本) */
 function isValidGeoFile(path: string): boolean {
   try {
@@ -74,11 +102,129 @@ function isValidGeoFile(path: string): boolean {
   }
 }
 
+function looksLikeSrs(data: Uint8Array): boolean {
+  return data.byteLength >= GEO_MIN_BYTES && data[0] === SRS_MAGIC_0 && data[1] === SRS_MAGIC_1;
+}
+
+function writeBytes(path: string, data: Uint8Array): void {
+  const file = fs.openSync(path, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+  try {
+    fs.writeSync(file.fd, data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+  } finally {
+    fs.closeSync(file);
+  }
+}
+
+function writeVersion(context: common.Context, kind: string, version: string): void {
+  const vf = fs.openSync(versionPath(context, kind),
+    fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+  try {
+    fs.writeSync(vf.fd, version);
+  } finally {
+    fs.closeSync(vf);
+  }
+}
+
+function readVersion(context: common.Context, kind: string): string {
+  try {
+    const path = versionPath(context, kind);
+    if (fs.accessSync(path)) {
+      return fs.readTextSync(path).trim();
+    }
+  } catch (e) {
+    // 无版本文件
+  }
+  return '';
+}
+
+function isUserDeleted(context: common.Context, kind: string): boolean {
+  try {
+    return fs.accessSync(deletedMarkerPath(context, kind));
+  } catch (e) {
+    return false;
+  }
+}
+
+function setUserDeleted(context: common.Context, kind: string): void {
+  try {
+    ensureGeoDir(context);
+    const f = fs.openSync(deletedMarkerPath(context, kind),
+      fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+    fs.closeSync(f);
+  } catch (e) {
+    // 标记失败不影响删除本身
+  }
+}
+
+function clearUserDeleted(context: common.Context, kind: string): void {
+  try {
+    const path = deletedMarkerPath(context, kind);
+    if (fs.accessSync(path)) {
+      fs.unlinkSync(path);
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+function readBundled(context: common.Context, kind: string): Uint8Array {
+  const raw = kind === 'site' ? RAW_SITE_FILE : RAW_IP_FILE;
+  return context.resourceManager.getRawFileContentSync(raw);
+}
+
+/** 把单个内置库播种到沙箱;已存在有效文件或用户明确删除过则跳过。 */
+function seedBundledAsset(context: common.Context, kind: string): boolean {
+  try {
+    if (isUserDeleted(context, kind)) {
+      return false;
+    }
+    if (isValidGeoFile(assetPath(context, kind))) {
+      return false;
+    }
+    ensureGeoDir(context);
+    const data = readBundled(context, kind);
+    if (!looksLikeSrs(data)) {
+      return false;
+    }
+    writeBytes(assetPath(context, kind), data);
+    writeVersion(context, kind, VERSION_BUNDLED);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * 启动时调用:内置库缺失/损坏则从 rawfile 播种。
+ * 用户删除过的库不会被自动补回(尊重用户操作)。
+ */
+export function ensureBundledGeoAssets(context: common.Context): void {
+  seedBundledAsset(context, 'site');
+  seedBundledAsset(context, 'ip');
+}
+
+/** 恢复内置库(用户删除后手动触发):清掉删除标记并强制复制。 */
+export function restoreBundledGeoAsset(context: common.Context, kind: string): void {
+  clearUserDeleted(context, kind);
+  ensureGeoDir(context);
+  const data = readBundled(context, kind);
+  if (!looksLikeSrs(data)) {
+    throw new Error('内置 Geo 库资源损坏');
+  }
+  writeBytes(assetPath(context, kind), data);
+  writeVersion(context, kind, VERSION_BUNDLED);
+}
+
+export function restoreBundledGeoAssets(context: common.Context): void {
+  restoreBundledGeoAsset(context, 'site');
+  restoreBundledGeoAsset(context, 'ip');
+}
+
 export function geoReady(context: common.Context): boolean {
   return isValidGeoFile(geoSitePath(context)) && isValidGeoFile(geoIpPath(context));
 }
 
-async function downloadTo(url: string, path: string): Promise<void> {
+async function fetchAsset(url: string): Promise<ArrayBuffer> {
   const client = http.createHttp();
   try {
     const resp = await client.request(url, {
@@ -100,23 +246,17 @@ async function downloadTo(url: string, path: string): Promise<void> {
     if (head[0] !== SRS_MAGIC_0 || head[1] !== SRS_MAGIC_1) {
       throw new Error('响应不是 sing-box 二进制规则集(缺少 SR 魔数)');
     }
-    const file = fs.openSync(path, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
-    try {
-      fs.writeSync(file.fd, data);
-    } finally {
-      fs.closeSync(file);
-    }
+    return data;
   } finally {
     client.destroy();
   }
 }
 
-async function downloadFirstAvailable(urls: Array<string>, path: string): Promise<void> {
+async function fetchFirstAvailable(urls: Array<string>): Promise<ArrayBuffer> {
   let lastErr: Error = new Error('无可用下载源');
   for (const url of urls) {
     try {
-      await downloadTo(url, path);
-      return;
+      return await fetchAsset(url);
     } catch (e) {
       lastErr = e instanceof Error ? e : new Error(`${e}`);
     }
@@ -124,13 +264,73 @@ async function downloadFirstAvailable(urls: Array<string>, path: string): Promis
   throw lastErr;
 }
 
-export async function downloadGeoAssets(context: common.Context): Promise<void> {
-  const dir = geoDir(context);
-  if (!fs.accessSync(dir)) {
-    fs.mkdirSync(dir, true);
+function sameFileContent(path: string, data: ArrayBuffer): boolean {
+  try {
+    if (!fs.accessSync(path) || fs.statSync(path).size !== data.byteLength) {
+      return false;
+    }
+    const f = fs.openSync(path, fs.OpenMode.READ_ONLY);
+    try {
+      const local = new ArrayBuffer(data.byteLength);
+      const n = fs.readSync(f.fd, local);
+      if (n !== data.byteLength) {
+        return false;
+      }
+      const a = new Uint8Array(local);
+      const b = new Uint8Array(data);
+      for (let i = 0; i < a.length; i++) {
+        if (a[i] !== b[i]) {
+          return false;
+        }
+      }
+      return true;
+    } finally {
+      fs.closeSync(f);
+    }
+  } catch (e) {
+    return false;
   }
-  await downloadFirstAvailable(URLS_SITE, geoSitePath(context));
-  await downloadFirstAvailable(URLS_IP, geoIpPath(context));
+}
+
+function updateStamp(): string {
+  const d = new Date();
+  const month = `${d.getMonth() + 1}`.padStart(2, '0');
+  const day = `${d.getDate()}`.padStart(2, '0');
+  return `${d.getFullYear()}-${month}-${day}`;
+}
+
+/** 检查更新结果:updated = 被替换的库数量(0 表示全部已是最新)。 */
+export interface GeoCheckResult {
+  updated: number;
+}
+
+/** 全量下载比对(约 90KB):内容不同才替换,相同则保留本地文件。 */
+async function checkAndUpdateOne(context: common.Context, kind: string): Promise<boolean> {
+  ensureGeoDir(context);
+  const data = await fetchFirstAvailable(kind === 'site' ? URLS_SITE : URLS_IP);
+  if (sameFileContent(assetPath(context, kind), data)) {
+    return false;
+  }
+  writeBytes(assetPath(context, kind), new Uint8Array(data));
+  writeVersion(context, kind, updateStamp());
+  clearUserDeleted(context, kind);
+  return true;
+}
+
+export async function checkGeoAssets(context: common.Context): Promise<GeoCheckResult> {
+  const result: GeoCheckResult = { updated: 0 };
+  if (await checkAndUpdateOne(context, 'site')) {
+    result.updated++;
+  }
+  if (await checkAndUpdateOne(context, 'ip')) {
+    result.updated++;
+  }
+  return result;
+}
+
+/** 单库检查更新(对齐安卓资产列表点击单库更新),返回 true 表示内容有变化。 */
+export async function checkGeoAsset(context: common.Context, kind: string): Promise<boolean> {
+  return checkAndUpdateOne(context, kind);
 }
 
 /** 单库资产信息(对齐安卓 AssetsActivity 列表行:名称/大小/版本标记) */
@@ -139,16 +339,17 @@ export interface GeoAssetInfo {
   fileName: string;    // 沙箱内文件名
   size: number;        // 字节,0 = 未下载
   version: string;     // .version.txt 内容;缺省 'Unknown'
+  bundled: boolean;    // true = 当前内容来自 HAP 内置库
 }
 
 export function geoAssetInfos(context: common.Context): Array<GeoAssetInfo> {
   const out: Array<GeoAssetInfo> = [];
-  const defs: Array<[string, string, string]> = [
-    ['site', GEO_SITE_FILE, 'geosite-cn'],
-    ['ip', GEO_IP_FILE, 'geoip-cn']
+  const defs: Array<[string, string]> = [
+    ['site', GEO_SITE_FILE],
+    ['ip', GEO_IP_FILE]
   ];
   for (const def of defs) {
-    const info: GeoAssetInfo = { kind: def[0], fileName: def[1], size: 0, version: 'Unknown' };
+    const info: GeoAssetInfo = { kind: def[0], fileName: def[1], size: 0, version: 'Unknown', bundled: false };
     try {
       const path = `${geoDir(context)}/${def[1]}`;
       if (fs.accessSync(path)) {
@@ -157,49 +358,35 @@ export function geoAssetInfos(context: common.Context): Array<GeoAssetInfo> {
     } catch (e) {
       // 未下载
     }
-    try {
-      const versionPath = `${geoDir(context)}/${def[2]}.version.txt`;
-      if (fs.accessSync(versionPath)) {
-        const v = fs.readTextSync(versionPath).trim();
-        if (v.length > 0) {
-          info.version = v;
-        }
+    const version = readVersion(context, def[0]);
+    if (version.length > 0) {
+      if (version === VERSION_BUNDLED) {
+        info.bundled = true;
+      } else {
+        info.version = version;
       }
-    } catch (e) {
-      // 无版本文件
     }
     out.push(info);
   }
   return out;
 }
 
-/** 单独更新一个库(对齐安卓资产列表点击单库更新) */
-export async function downloadGeoAsset(context: common.Context, kind: string): Promise<void> {
-  const dir = geoDir(context);
-  if (!fs.accessSync(dir)) {
-    fs.mkdirSync(dir, true);
-  }
-  if (kind === 'site') {
-    await downloadFirstAvailable(URLS_SITE, geoSitePath(context));
-  } else {
-    await downloadFirstAvailable(URLS_IP, geoIpPath(context));
-  }
-}
-
-/** 删除一个库及其版本标记(对齐安卓资产左滑删除);缺库时内核自动跳过对应 cn 分流 */
+/** 删除一个库及其版本标记(对齐安卓资产左滑删除);缺库时内核自动跳过对应 cn 分流。
+ *  同时写入用户删除标记,避免下次启动又被内置库自动补回。 */
 export function deleteGeoAsset(context: common.Context, kind: string): void {
   const path = kind === 'site' ? geoSitePath(context) : geoIpPath(context);
-  const versionPath = `${geoDir(context)}/${kind === 'site' ? 'geosite-cn' : 'geoip-cn'}.version.txt`;
   if (fs.accessSync(path)) {
     fs.unlinkSync(path);
   }
   try {
-    if (fs.accessSync(versionPath)) {
-      fs.unlinkSync(versionPath);
+    const vp = versionPath(context, kind);
+    if (fs.accessSync(vp)) {
+      fs.unlinkSync(vp);
     }
   } catch (e) {
     // 版本文件清理失败不影响删除结果
   }
+  setUserDeleted(context, kind);
 }
 
 /**
@@ -229,24 +416,17 @@ export async function importGeoAssetFromFile(context: common.Context): Promise<s
   if (!isSite && !isIp) {
     throw new Error(`文件名必须是 geoip.srs 或 geosite.srs(当前: ${fileName})`);
   }
-  const dir = geoDir(context);
-  if (!fs.accessSync(dir)) {
-    fs.mkdirSync(dir, true);
-  }
-  const targetPath = isSite ? geoSitePath(context) : geoIpPath(context);
+  ensureGeoDir(context);
+  const kind = isSite ? 'site' : 'ip';
+  const targetPath = assetPath(context, kind);
   const sizeOk = copyUriToPath(srcUri, targetPath);
   if (!sizeOk) {
     fs.unlinkSync(targetPath);
     throw new Error(`导入的 ${fileName} 大小可疑,内容不完整`);
   }
   // 版本标记(对齐安卓 .version.txt = Custom)
-  const versionPath = `${dir}/${isSite ? 'geosite-cn' : 'geoip-cn'}.version.txt`;
-  const vf = fs.openSync(versionPath, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
-  try {
-    fs.writeSync(vf.fd, 'Custom');
-  } finally {
-    fs.closeSync(vf);
-  }
+  writeVersion(context, kind, 'Custom');
+  clearUserDeleted(context, kind);
   return targetPath;
 }
 

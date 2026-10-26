@@ -13,6 +13,7 @@ import { subscribeVpnEvents, unsubscribeVpnEvents, publishAppForeground } from '
 import { VpnService } from '../core/VpnService';
 import { needAutoUpdate, updateSubscription, markSubSuccess, markSubFailure, setAppContext } from '../core/Subscriptions';
 import { subErrorText } from '../utils/Subscription';
+import { ensureBundledGeoAssets } from '../utils/GeoAssets';
 
 /**
  * 窗口/系统栏底色的**显式**取值,与 `resources/{base,dark}/element/color.json` 的 `bg_page` 逐字一致。
@@ -105,6 +106,7 @@ export default class EntryAbility extends UIAbility {
     AppStorage.setOrCreate('vpnStatus', 'disconnected');
     AppStorage.setOrCreate('vpnUpSpeed', 0);
     AppStorage.setOrCreate('vpnDownSpeed', 0);
+    AppStorage.setOrCreate('vpnMemMb', 0);
     void this.syncVpnContinuousTask(false);
     /* VPN 被系统杀掉:由软件自动重新拉起(用户 2026-10-23 要求) */
     void this.autoRestartVpn();
@@ -294,13 +296,12 @@ export default class EntryAbility extends UIAbility {
          （后台卡片没有系统状态栏覆盖，所以顶部那一行完整可见）。
          ⇒ 透明（#00000000）之后，状态栏区域由页面自己绘制：HDS 标题栏的渐变模糊/沉浸光感铺进去，
             列表条目也能从时钟后面滚过。文字/图标颜色仍由 `statusBarContentColor` 按深浅色切换。 */
-      /* 深色下状态栏用主题底色**实色**（真机 2026-10-17：透明 '#00000000' 在深色主题下
-         状态栏仍渲染成白色 —— 要么系统把全透明当无效值回退白底，要么 HDS 沉浸光感材质
-         在深色下渲染成浅色玻璃透出来），浅色保持透明（浅色下白条与页面底色同色不可见，
-         且保留"内容从时钟后面滚过"的沉浸效果）。
-         代价：深色下状态栏区域由系统实色绘制，内容不再钻入 —— 但深浅色跟随主题。 */
+      /* 深色下曾经把状态栏写成主题底色**实色**（担心透明被系统回退成白色）。
+         但 HdsNavigation 现在通过 `enableComponentSafeArea + ignoreLayoutSafeArea(TOP)`
+         把沉浸光感材质铺到了状态栏：实色会把材质整条盖住，形成用户看到的"顶部黑边"。
+         ⇒ 深浅色统一透明，让标题栏材质自己绘制；窗口底色仍按主题设置，作为材质不可用时的兜底。 */
       target.setWindowSystemBarProperties({
-        statusBarColor: dark ? background : '#00000000',
+        statusBarColor: '#00000000',
         navigationBarColor: '#00000000',
         statusBarContentColor: contentColor,
         navigationBarContentColor: contentColor
@@ -350,6 +351,9 @@ export default class EntryAbility extends UIAbility {
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     LogStore.addLog('[app] PaperBox 启动');
+    /* 内置 Geo 库播种:同步、约 90KB,必须在任何自动连接之前完成,
+       否则规则模式第一次启动拿不到 cn 分流文件。用户删除过的库不会被补回。 */
+    ensureBundledGeoAssets(this.context);
     this.handleAction(want);
     // 长时任务被系统取消/暂停时校正状态;VPN 仍在连接则由状态心跳按冷却重新申请
     VpnService.subscribeContinuousTaskEvents();
@@ -364,11 +368,19 @@ export default class EntryAbility extends UIAbility {
     // 接收 :vpn 扩展进程发来的日志与状态
     subscribeVpnEvents((line: string) => {
       LogStore.appendRemote(line);
-    }, (status: string, running: boolean, profileId: string) => {
+    }, (status: string, running: boolean, profileId: string, memoryKb: number) => {
       AppStorage.setOrCreate('vpnRunning', running);
       AppStorage.setOrCreate('vpnStatus', status);
       AppStorage.setOrCreate('vpnRunningProfileId', profileId);
       this.vpnHeartbeatAt = running ? Date.now() : 0;
+      if (running) {
+        /* 内核进程 PSS(sing-box .so 在 :vpn 进程里);切换节点的中间态没有新值则保留上一次 */
+        if (memoryKb > 0) {
+          AppStorage.setOrCreate('vpnMemMb', Math.round(memoryKb / 1024));
+        }
+      } else {
+        AppStorage.setOrCreate('vpnMemMb', 0);
+      }
       if (running) {
         /* 连上了 ⇒ 之前的自动拉起算成功,计数清零 */
         this.vpnRestartCount = 0;

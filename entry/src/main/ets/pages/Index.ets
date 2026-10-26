@@ -233,6 +233,8 @@ struct Index {
   @StorageLink('vpnStatus') statusText: string = 'disconnected';
   @StorageLink('vpnUpSpeed') upSpeed: number = 0;
   @StorageLink('vpnDownSpeed') downSpeed: number = 0;
+  /** 内核进程(:vpn 扩展进程)PSS,MB;sing-box .so 就跑在这个进程里 */
+  @StorageLink('vpnMemMb') coreMemMb: number = 0;
   @StorageLink('vpnTotalUp') totalUp: number = 0;
   @StorageLink('vpnTotalDown') totalDown: number = 0;
   private context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
@@ -2385,9 +2387,10 @@ struct Index {
               .fontColor($r('app.color.text_3'))
               .width('100%')
               .textAlign(TextAlign.Center)
-            Column() {
+            Column({ space: 4 }) {
+              /* 总内存 = 应用(UI 进程) + 内核(:vpn 扩展进程),两个独立进程的 PSS 相加 */
               Row({ space: 3 }) {
-                Text(`${this.memMb}`)
+                Text(`${this.memMb + this.coreMemMb}`)
                   .fontSize(28)
                   .fontWeight(700)
                   .fontColor($r('app.color.text_1'))
@@ -2396,7 +2399,17 @@ struct Index {
                   .fontColor($r('app.color.text_3'))
                   .margin({ bottom: 3 })
               }
+              .justifyContent(FlexAlign.Center)
               .alignItems(VerticalAlign.Bottom)
+              /* 小字明细:应用 / 内核;未连接时内核显示 -- */
+              Text($r('app.string.home_memory_breakdown',
+                `${this.memMb}`,
+                this.coreMemMb > 0 ? `${this.coreMemMb}` : '--'))
+                .fontSize(10.5)
+                .fontColor($r('app.color.text_3'))
+                .maxLines(1)
+                .width('100%')
+                .textAlign(TextAlign.Center)
             }
             .layoutWeight(1)
             .justifyContent(FlexAlign.Center)
@@ -3057,9 +3070,12 @@ struct Index {
    */
   private shellTitleBar(): HdsNavigationTitleBarOptions {
     return {
-      /* ★ true：整条标题栏（材质 + 内容）**再退一个状态栏高度** ⇒ 落在时钟下方。
-         RzdMusic 的注释里 false 时标题在 38..94vp，是因为它的外壳根节点本来就落在安全区里；
-         本工程根 Stack 挂了 ignoreLayoutSafeArea 铺满整窗 ⇒ false 会把标题排到 y=0、与状态栏文字重叠。 */
+      /* ★ 材质下探 + 标题避让要分开处理：
+         · 外层 Navigation 的 `ignoreLayoutSafeArea(TOP)` 让标题栏背景/材质伸进状态栏；
+         · `avoidLayoutSafeArea: true` 只让标题栏**内容**（返回键/标题/菜单）避让状态栏。
+         两者组合的结果是：材质从 y=0 铺起，标题仍落在时钟下方。
+         `enableComponentSafeArea` 是给子内容避让标题栏用的，这里不需要，开了反而会让
+         自定义标题行按组件安全区重新排布（实测会与状态栏重叠）。 */
       avoidLayoutSafeArea: true,
       style: {
         blurStrategy: BlurStrategy.ENABLE,
@@ -3152,6 +3168,8 @@ struct Index {
         .barMode(BarMode.Fixed)
         .barHeight(TAB_BAR_CONTENT_HEIGHT)
         .scrollable(false)
+        /* 点击页签切换内容时保留 HDS 的横向过渡；默认值是 0，表现为瞬间硬切 */
+        .animationDuration(240)
         /* 内容从胶囊后面滚过 ⇒ 玻璃材质才有"透出内容"的沉浸感 */
         .barOverlap(true)
         .barBackgroundColor(Color.Transparent)
@@ -3192,9 +3210,10 @@ struct Index {
       /* 左上角 HDS 自带的返回箭头没用（本页是根页面，栈里没有上一级）⇒ 关掉 */
       .hideBackButton(true)
       .hideToolBar(true)
-      /* ⚠️ 这里**不再**挂 ignoreLayoutSafeArea：挂上整条标题栏会顶到 y=0，标题与状态栏文字重叠。
-         现在 Navigation 的盒子落在安全区里 ⇒ 标题落在时钟下方；内容层自己有
-         matchParent + ignoreLayoutSafeArea ⇒ 列表仍铺满整窗、能从标题栏后面滚过去。 */
+      /* ⚠️ 顶部让位由 HDS 处理（enableComponentSafeArea）⇒ Navigation 必须伸进状态栏，
+         否则标题栏材质只能从安全区下沿开始，深色模式顶部会出现一条没有材质的色带。
+         只伸 TOP：底部胶囊的让位仍由 navBottomVp 计算，动 BOTTOM 会把它顶高。 */
+      .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP])
       .height('100%')
       .backgroundColor($r('app.color.bg_page'))
     }
