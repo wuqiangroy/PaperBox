@@ -1033,6 +1033,26 @@
       "value": "Geo 数据下载完成，重新连接后启用 cn 直连分流"
     },
     {
+      "name": "geo_checking",
+      "value": "正在检查 Geo 库更新（约 90 KB）…"
+    },
+    {
+      "name": "geo_up_to_date",
+      "value": "Geo 库已是最新版本"
+    },
+    {
+      "name": "geo_update_complete",
+      "value": "Geo 库已更新，重新连接后生效"
+    },
+    {
+      "name": "geo_restore_complete",
+      "value": "已恢复内置 Geo 库"
+    },
+    {
+      "name": "geo_restore_failed",
+      "value": "恢复内置 Geo 库失败: %1$s"
+    },
+    {
       "name": "geo_import_complete",
       "value": "已导入自定义 Geo 数据:%1$s,重新连接后生效"
     },
@@ -1174,15 +1194,27 @@
     },
     {
       "name": "settings_geo_ready",
-      "value": "✓ Geo 数据已就绪(cn 直连分流已启用)"
+      "value": "✓ Geo 库已就绪(cn 直连分流已启用)"
     },
     {
       "name": "settings_geo_missing",
-      "value": "未下载 Geo 数据(cn 分流不可用)"
+      "value": "Geo 库已删除或损坏(cn 分流不可用)"
     },
     {
       "name": "settings_geo_downloading",
       "value": "下载中…"
+    },
+    {
+      "name": "settings_geo_checking",
+      "value": "检查中…"
+    },
+    {
+      "name": "settings_geo_check_update",
+      "value": "检查更新"
+    },
+    {
+      "name": "settings_geo_restore",
+      "value": "恢复内置库"
     },
     {
       "name": "settings_geo_redownload",
@@ -1198,7 +1230,7 @@
     },
     {
       "name": "settings_geo_import_hint",
-      "value": "从文件导入 geoip.db / geosite.db"
+      "value": "从文件导入 geosite.srs / geoip.srs"
     },
     {
       "name": "settings_geo_site",
@@ -1211,6 +1243,10 @@
     {
       "name": "geo_asset_status",
       "value": "%1$s · 版本 %2$s"
+    },
+    {
+      "name": "geo_asset_bundled_status",
+      "value": "%1$s · 内置"
     },
     {
       "name": "geo_asset_absent",
@@ -2490,7 +2526,11 @@
     },
     {
       "name": "home_memory_label",
-      "value": "内存占用"
+      "value": "总内存"
+    },
+    {
+      "name": "home_memory_breakdown",
+      "value": "应用 %1$s MB · 内核 %2$s MB"
     },
     {
       "name": "home_local_section",

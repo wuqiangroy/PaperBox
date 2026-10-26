@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "com.paperbox.harmonyos",
     "vendor": "paperbox",
-    "versionCode": 3001001,
-    "versionName": "3.1.1",
+    "versionCode": 3001002,
+    "versionName": "3.1.2",
     "icon": "$media:app_icon",
     "label": "$string:app_name"
   }

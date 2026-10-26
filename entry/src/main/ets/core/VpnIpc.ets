@@ -29,13 +29,15 @@ export function publishVpnLog(line: string): void {
 
 /**
  * 扩展进程调用:状态变更通知 UI(profileId 便于 UI 判断当前节点)。
+ * memoryKb = 扩展进程 PSS(KB,sing-box .so 就跑在这个进程里),-1 表示未知。
  */
-export function publishVpnStatus(status: string, running: boolean, profileId: string = ''): void {
+export function publishVpnStatus(status: string, running: boolean, profileId: string = '', memoryKb: number = -1): void {
   try {
     const payload: Record<string, string> = {
       'status': status,
       'running': running ? 'true' : 'false',
-      'profileId': profileId
+      'profileId': profileId,
+      'memoryKb': `${memoryKb}`
     };
     const opts: commonEventManager.CommonEventPublishData = {
       bundleName: APP_BUNDLE,
@@ -107,7 +109,7 @@ let subscriptionGeneration: number = 0;
 
 /** UI 进程调用:订阅扩展发来的日志、状态与流量 */
 export function subscribeVpnEvents(onLog: (line: string) => void,
-  onStatus: (status: string, running: boolean, profileId: string) => void,
+  onStatus: (status: string, running: boolean, profileId: string, memoryKb: number) => void,
   onTraffic: (upSpeed: number, downSpeed: number, totalUp: number, totalDown: number) => void): void {
   const generation = ++subscriptionGeneration;
   const info: commonEventManager.CommonEventSubscribeInfo = {
@@ -130,7 +132,8 @@ export function subscribeVpnEvents(onLog: (line: string) => void,
           const status: string = obj['status'] === undefined ? '' : `${obj['status']}`;
           const running: boolean = `${obj['running']}` === 'true';
           const profileId: string = obj['profileId'] === undefined ? '' : `${obj['profileId']}`;
-          onStatus(status, running, profileId);
+          const memoryKb = obj['memoryKb'] === undefined ? -1 : Number(obj['memoryKb']);
+          onStatus(status, running, profileId, isNaN(memoryKb) ? -1 : memoryKb);
         } catch (e) {
           // 忽略格式错误的状态
         }

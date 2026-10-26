@@ -1033,6 +1033,26 @@
       "value": "Geo data downloaded. Reconnect to enable direct routing for cn."
     },
     {
+      "name": "geo_checking",
+      "value": "Checking Geo database updates (about 90 KB)…"
+    },
+    {
+      "name": "geo_up_to_date",
+      "value": "Geo database is up to date"
+    },
+    {
+      "name": "geo_update_complete",
+      "value": "Geo database updated. Reconnect to apply"
+    },
+    {
+      "name": "geo_restore_complete",
+      "value": "Bundled Geo database restored"
+    },
+    {
+      "name": "geo_restore_failed",
+      "value": "Failed to restore bundled Geo database: %1$s"
+    },
+    {
       "name": "geo_import_complete",
       "value": "Imported custom Geo data: %1$s. Reconnect to apply"
     },
@@ -1174,15 +1194,27 @@
     },
     {
       "name": "settings_geo_ready",
-      "value": "✓ Geo data ready (cn split-routing enabled)"
+      "value": "✓ Geo database ready (cn split-routing enabled)"
     },
     {
       "name": "settings_geo_missing",
-      "value": "Geo data not downloaded (cn split-routing unavailable)"
+      "value": "Geo database deleted or damaged (cn split-routing unavailable)"
     },
     {
       "name": "settings_geo_downloading",
       "value": "Downloading…"
+    },
+    {
+      "name": "settings_geo_checking",
+      "value": "Checking…"
+    },
+    {
+      "name": "settings_geo_check_update",
+      "value": "Check for updates"
+    },
+    {
+      "name": "settings_geo_restore",
+      "value": "Restore bundled"
     },
     {
       "name": "settings_geo_redownload",
@@ -1198,7 +1230,7 @@
     },
     {
       "name": "settings_geo_import_hint",
-      "value": "Import geoip.db / geosite.db from file"
+      "value": "Import geosite.srs / geoip.srs from file"
     },
     {
       "name": "settings_geo_site",
@@ -1211,6 +1243,10 @@
     {
       "name": "geo_asset_status",
       "value": "%1$s · version %2$s"
+    },
+    {
+      "name": "geo_asset_bundled_status",
+      "value": "%1$s · built-in"
     },
     {
       "name": "geo_asset_absent",
@@ -2490,7 +2526,11 @@
     },
     {
       "name": "home_memory_label",
-      "value": "Memory"
+      "value": "Total memory"
+    },
+    {
+      "name": "home_memory_breakdown",
+      "value": "App %1$s MB · Core %2$s MB"
     },
     {
       "name": "home_local_section",

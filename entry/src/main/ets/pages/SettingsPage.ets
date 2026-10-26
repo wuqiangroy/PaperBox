@@ -5,7 +5,7 @@ import { UiSpec } from '../common/UiSpec';
 import ConfigurationConstant from '@ohos.app.ability.ConfigurationConstant';
 import { AppSettings } from '../model/Profile';
 import { initStore, loadSettings, saveSettings, LogStore } from '../model/Store';
-import { geoReady, downloadGeoAssets, importGeoAssetFromFile, geoAssetInfos, downloadGeoAsset, deleteGeoAsset, GeoAssetInfo } from '../utils/GeoAssets';
+import { geoReady, ensureBundledGeoAssets, restoreBundledGeoAssets, checkGeoAssets, checkGeoAsset, importGeoAssetFromFile, geoAssetInfos, deleteGeoAsset, GeoAssetInfo } from '../utils/GeoAssets';
 import { formatBytes } from '../utils/TrafficStats';
 import { getClipboardText, setClipboardText } from '../utils/ClipboardHelper';
 import { VpnService } from '../core/VpnService';
@@ -109,6 +109,7 @@ export struct SettingsPage {
       this.s = await loadSettings();
       this.baselineJson = JSON.stringify(this.s);
       this.setDirty(false);
+      ensureBundledGeoAssets(this.context);
       this.geoOk = geoReady(this.context);
       this.refreshGeoInfos();
     } catch (e) {
@@ -122,17 +123,20 @@ export struct SettingsPage {
     this.geoInfos = geoAssetInfos(this.context);
   }
 
-  async downloadGeo(): Promise<void> {
+  /** 全量下载比对:内容相同提示已最新,不同才替换(约 90KB)。 */
+  async checkGeo(): Promise<void> {
     if (this.geoLoading) {
       return;
     }
     this.geoLoading = true;
-    promptAction.showToast({ message: $r('app.string.geo_downloading') });
+    promptAction.showToast({ message: $r('app.string.geo_checking') });
     try {
-      await downloadGeoAssets(this.context);
+      const updated = await checkGeoAssets(this.context);
       this.geoOk = geoReady(this.context);
       this.refreshGeoInfos();
-      promptAction.showToast({ message: $r('app.string.geo_download_complete') });
+      promptAction.showToast({
+        message: updated.updated > 0 ? $r('app.string.geo_update_complete') : $r('app.string.geo_up_to_date')
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : `${e}`;
       promptAction.showToast({ message: $r('app.string.download_failed_reason', msg) });
@@ -141,18 +145,39 @@ export struct SettingsPage {
     }
   }
 
-  /** 单库更新(对齐安卓资产列表点击单库更新) */
-  async downloadSingleGeo(kind: string): Promise<void> {
+  /** 恢复内置库(用户删除后手动触发) */
+  restoreGeo(): void {
     if (this.geoLoading) {
       return;
     }
     this.geoLoading = true;
     try {
-      await downloadGeoAsset(this.context, kind);
+      restoreBundledGeoAssets(this.context);
+      this.geoOk = geoReady(this.context);
+      this.refreshGeoInfos();
+      promptAction.showToast({ message: $r('app.string.geo_restore_complete') });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : `${e}`;
+      promptAction.showToast({ message: $r('app.string.geo_restore_failed', msg) });
+    } finally {
+      this.geoLoading = false;
+    }
+  }
+
+  /** 单库检查更新(对齐安卓资产列表点击单库更新) */
+  async checkSingleGeo(kind: string): Promise<void> {
+    if (this.geoLoading) {
+      return;
+    }
+    this.geoLoading = true;
+    try {
+      const updated = await checkGeoAsset(this.context, kind);
       this.geoOk = geoReady(this.context);
       this.refreshGeoInfos();
       promptAction.showToast({
-        message: $r('app.string.settings_geo_updated', kind === 'site' ? 'geosite-cn.db' : 'geoip-cn.db')
+        message: updated
+          ? $r('app.string.settings_geo_updated', kind === 'site' ? 'geosite-cn.srs' : 'geoip-cn.srs')
+          : $r('app.string.geo_up_to_date')
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : `${e}`;
@@ -696,20 +721,26 @@ export struct SettingsPage {
                     .fontColor(this.geoOk ? $r('app.color.success') : $r('app.color.text_1'))
                     .layoutWeight(1)
                     .maxLines(2)
-                  Button(this.geoLoading ? $r('app.string.settings_geo_downloading') : (this.geoOk ? $r('app.string.settings_geo_redownload') : $r('app.string.settings_geo_download')))
+                  Button(this.geoLoading ? $r('app.string.settings_geo_checking') : (this.geoOk ? $r('app.string.settings_geo_check_update') : $r('app.string.settings_geo_restore')))
                     .height(32)
                     .fontSize(14)
                     .padding({ left: 12, right: 12 })
                     .backgroundColor(this.geoLoading ? $r('app.color.control_disabled') : $r('app.color.primary'))
-                    .visualEffect(pressLightEffect(this.litKey === 'geo:download', true))
+                    .visualEffect(pressLightEffect(this.litKey === 'geo:check', true))
                     .onTouch((event: TouchEvent) => {
                       if (event.type === TouchType.Down) {
-                        this.litKey = 'geo:download';
+                        this.litKey = 'geo:check';
                       } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
                         this.litKey = '';
                       }
                     })
-                    .onClick(() => this.downloadGeo())
+                    .onClick(() => {
+                      if (this.geoOk) {
+                        void this.checkGeo();
+                      } else {
+                        this.restoreGeo();
+                      }
+                    })
                 }
                 .width('100%')
                 .padding({ top: 12, bottom: 12 })
@@ -748,12 +779,14 @@ export struct SettingsPage {
                       Text(info.kind === 'site' ? $r('app.string.settings_geo_site') : $r('app.string.settings_geo_ip'))
                         .fontSize(15).fontColor($r('app.color.text_1')).width('100%')
                       Text(info.size > 0
-                        ? $r('app.string.geo_asset_status', formatBytes(info.size), info.version)
+                        ? (info.bundled
+                          ? $r('app.string.geo_asset_bundled_status', formatBytes(info.size))
+                          : $r('app.string.geo_asset_status', formatBytes(info.size), info.version))
                         : $r('app.string.geo_asset_absent'))
                         .fontSize(12).fontColor($r('app.color.text_3')).width('100%')
                     }.alignItems(HorizontalAlign.Start).layoutWeight(1)
 
-                    Button(this.geoLoading ? $r('app.string.settings_geo_downloading') : $r('app.string.settings_geo_update_one'))
+                    Button(this.geoLoading ? $r('app.string.settings_geo_checking') : $r('app.string.settings_geo_update_one'))
                       .height(32)
                       .fontSize(14)
                       .padding({ left: 8, right: 8 })
@@ -768,7 +801,7 @@ export struct SettingsPage {
                           this.litKey = '';
                         }
                       })
-                      .onClick(() => { void this.downloadSingleGeo(info.kind); })
+                      .onClick(() => { void this.checkSingleGeo(info.kind); })
                     if (info.size > 0) {
                       Button($r('app.string.settings_geo_delete'))
                         .height(32)

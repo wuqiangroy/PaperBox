@@ -5,6 +5,7 @@ import common from '@ohos.app.ability.common';
 import fs from '@ohos.file.fs';
 import commonEventManager from '@ohos.commonEventManager';
 import http from '@ohos.net.http';
+import hidebug from '@ohos.hidebug';
 import BusinessError from '@ohos.base';
 import { Profile, AppSettings } from '../model/Profile';
 import { initStore, loadProfiles, loadGroups, loadSettings, getPendingProfileId, setPendingProfileId, clearPendingProfileId, getRunningProfileId, setRunningProfileId, mutateProfiles, LogStore } from '../model/Store';
@@ -12,7 +13,7 @@ import { buildCoreConfig, effectiveIpv6Mode } from '../core/ConfigBuilder';
 import { loadRouteRules, RouteRule, loadRemoteRuleSets, RemoteRuleSet } from '../model/RouteRule';
 import { CoreManager } from '../core/CoreManager';
 import { publishVpnLog, publishVpnStatus, publishVpnTraffic, VPN_EVENT_LATENCY, VPN_EVENT_APP_FOREGROUND } from '../core/VpnIpc';
-import { geoReady, geoSitePath as geoSiteFile, geoIpPath as geoIpFile } from '../utils/GeoAssets';
+import { geoReady, ensureBundledGeoAssets, geoSitePath as geoSiteFile, geoIpPath as geoIpFile } from '../utils/GeoAssets';
 import { fetchTrafficTotals } from '../utils/TrafficStats';
 
 /**
@@ -401,12 +402,12 @@ export default class VpnExtAbility extends VpnExtensionAbility {
           // UI 进程可能刚被系统回收重建(AppStorage 已重置),必须重播当前状态,
           // 否则 UI 永远停在「连接中」——这是闲置后无法启动的主要根因。
           LogStore.addLog('[vpn] 已在运行且没有新的启动目标,忽略重复触发并重播已连接状态');
-          publishVpnStatus(`connected:${this.currentNodeName}`, true, this.currentRunId);
+          publishVpnStatus(`connected:${this.currentNodeName}`, true, this.currentRunId, this.readMemoryKb());
           return;
         }
         if (pendingId === this.currentRunId && !this.forceRestartRequested) {
           LogStore.addLog('[vpn] 已在运行且节点未变化,忽略重复触发并重播已连接状态');
-          publishVpnStatus(`connected:${this.currentNodeName}`, true, this.currentRunId);
+          publishVpnStatus(`connected:${this.currentNodeName}`, true, this.currentRunId, this.readMemoryKb());
           await clearPendingProfileId();
           return;
         }
@@ -525,6 +526,8 @@ export default class VpnExtAbility extends VpnExtensionAbility {
     let geoIpPath = '';
     if (settings.mode === 'rule') {
       try {
+        /* UI 进程若尚未播种(进程重建等),这里再兜底一次;用户删除过的库不会补回。 */
+        ensureBundledGeoAssets(context);
         if (geoReady(context)) {
           geositePath = geoSiteFile(context);
           geoIpPath = geoIpFile(context);
@@ -616,8 +619,19 @@ export default class VpnExtAbility extends VpnExtensionAbility {
     this.startTrafficReporter();
     this.startHeartbeat();
     this.startKeepAliveHeartbeat();
-    publishVpnStatus(`connected:${node.name}`, true, pendingId);
+    publishVpnStatus(`connected:${node.name}`, true, pendingId, this.readMemoryKb());
     await clearPendingProfileId();
+  }
+
+  /** 扩展进程 PSS(KB):sing-box 以 .so 跑在本进程,这个值就是「内核进程」的内存。
+   *  getPss 读 /proc/{pid}/smaps_rollup,5s 心跳里调用一次开销可接受。 */
+  private readMemoryKb(): number {
+    try {
+      const kb = Number(hidebug.getPss());
+      return kb > 0 ? Math.round(kb) : -1;
+    } catch (e) {
+      return -1;
+    }
   }
 
   /** 心跳:只想让 UI 进程知道「扩展还活着」,内容与当前状态一致,不改变 UI 显示。 */
